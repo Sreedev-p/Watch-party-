@@ -20,6 +20,15 @@ let roomState = {
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
 
+    // --- NEW: Live Chat ---
+    socket.on('chat_message', (text) => {
+        // Grab the first 5 characters of the socket ID to use as a temporary username
+        const tempName = `User-${socket.id.substring(0, 5)}`;
+        
+        // io.emit sends it to EVERYONE, including the person who sent it
+        io.emit('chat_message', { sender: tempName, text: text });
+    });
+    
     socket.on('request_sync', () => {
         let currentVideoTime = roomState.time;
         if (roomState.state === 'playing') {
