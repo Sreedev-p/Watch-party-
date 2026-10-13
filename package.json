@@ -1,0 +1,31 @@
+{
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0"
+  },
+  "scripts": {
+    "prepare": "husky"
+  },
+  "name": "watch-party",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "dependencies": {
+    "picomatch": "^4.0.7",
+    "string-argv": "^0.3.2",
+    "tinyexec": "^1.3.1",
+    "yaml": "^2.9.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sreedev-p/Watch-party-.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Sreedev-p/Watch-party-/issues"
+  },
+  "homepage": "https://github.com/Sreedev-p/Watch-party-#readme"
+}
