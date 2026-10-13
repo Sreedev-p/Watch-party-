@@ -17,63 +17,101 @@ let roomState = {
     videoId: '8hP9D6kZseM' 
 };
 
-io.on('connection', (socket) => {
-    console.log(`User connected: ${socket.id}`);
+// --- NEW: Dictionary to hold multiple rooms ---
+const rooms = {};
 
-    // --- NEW: Live Chat ---
-    socket.on('chat_message', (text) => {
-        // Grab the first 5 characters of the socket ID to use as a temporary username
-        const tempName = `User-${socket.id.substring(0, 5)}`;
+io.on('connection', (socket) => {
+    console.log(`Connection opened: ${socket.id}`);
+
+    // 1. Handle joining a specific room
+    // --- NEW: Memory Leak Prevention & Disconnect Logic ---
+    socket.on('disconnect', () => {
+        if (!socket.roomId) return; // Ignore users who never joined a room
+
+        // 1. Tell the room they left
+        socket.to(socket.roomId).emit('chat_message', { 
+            sender: 'System', 
+            text: `${socket.username} left the watch party.` 
+        });
+
+        // 2. Check how many people are left in this specific room
+        const roomOccupants = io.sockets.adapter.rooms.get(socket.roomId);
         
-        // io.emit sends it to EVERYONE, including the person who sent it
-        io.emit('chat_message', { sender: tempName, text: text });
-    });
-    
-    socket.on('request_sync', () => {
-        let currentVideoTime = roomState.time;
-        if (roomState.state === 'playing') {
-            const elapsedSeconds = (Date.now() - roomState.lastUpdate) / 1000;
-            currentVideoTime += elapsedSeconds;
+        // 3. If the room is completely empty, delete it from our server memory
+        if (!roomOccupants || roomOccupants.size === 0) {
+            console.log(`Room ${socket.roomId} is empty. Deleting from memory.`);
+            delete rooms[socket.roomId]; 
         }
-        // Now sending videoId to new users
-        socket.emit('initial_state', { 
-            state: roomState.state, 
-            time: currentVideoTime,
-            videoId: roomState.videoId
+    });
+    socket.on('join_room', ({ roomId, username }) => {
+        socket.join(roomId); // Socket.io groups this user into the room
+        
+        // Save the data to this specific user's socket connection
+        socket.roomId = roomId;
+        socket.username = username;
+
+        // If this is the first person in the room, initialize the default state
+        if (!rooms[roomId]) {
+            rooms[roomId] = { state: 'paused', time: 0, lastUpdate: Date.now(), videoId: '8hP9D6kZseM' };
+        }
+
+        // Announce the arrival to everyone ELSE in that room
+        socket.to(roomId).emit('chat_message', { 
+            sender: 'System', 
+            text: `${username} joined the watch party.` 
         });
     });
 
-    // --- NEW: Secure API Proxy ---
+    // 2. Sync requests now pull from the user's specific room
+    socket.on('request_sync', () => {
+        const room = rooms[socket.roomId];
+        if (!room) return;
+
+        let currentVideoTime = room.time;
+        if (room.state === 'playing') {
+            const elapsedSeconds = (Date.now() - room.lastUpdate) / 1000;
+            currentVideoTime += elapsedSeconds;
+        }
+        socket.emit('initial_state', { state: room.state, time: currentVideoTime, videoId: room.videoId });
+    });
+
+    // 3. Broadcasts now use `socket.to(socket.roomId)` instead of `socket.broadcast`
+    socket.on('play_video', (time) => {
+        if (!socket.roomId) return;
+        rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'playing', time: time, lastUpdate: Date.now() };
+        socket.to(socket.roomId).emit('sync_play', time);
+    });
+
+    socket.on('pause_video', (time) => {
+        if (!socket.roomId) return;
+        rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'paused', time: time, lastUpdate: Date.now() };
+        socket.to(socket.roomId).emit('sync_pause', time);
+    });
+
+    socket.on('change_video', (newVideoId) => {
+        if (!socket.roomId) return;
+        rooms[socket.roomId] = { state: 'playing', time: 0, lastUpdate: Date.now(), videoId: newVideoId };
+        
+        // io.to() sends to EVERYONE in the room, including the sender
+        io.to(socket.roomId).emit('load_new_video', newVideoId);
+    });
+
+    // 4. Chat now uses the custom username
+    socket.on('chat_message', (text) => {
+        if (!socket.roomId) return;
+        io.to(socket.roomId).emit('chat_message', { sender: socket.username, text: text });
+    });
+
+    // Handle search (unchanged, just added here for completeness)
     socket.on('search_youtube', async (query) => {
         try {
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
             const response = await fetch(url);
             const data = await response.json();
-            
-            if (data.items) {
-                // Send results ONLY to the user who searched
-                socket.emit('search_results', data.items);
-            }
+            if (data.items) socket.emit('search_results', data.items);
         } catch (error) {
             console.error("YouTube API Error:", error);
         }
-    });
-
-    // --- NEW: Change Video ---
-    socket.on('change_video', (newVideoId) => {
-        roomState = { state: 'playing', time: 0, lastUpdate: Date.now(), videoId: newVideoId };
-        // Broadcast the new video to EVERYONE in the room
-        io.emit('load_new_video', newVideoId);
-    });
-
-    socket.on('play_video', (time) => {
-        roomState = { state: 'playing', time: time, lastUpdate: Date.now(), videoId: roomState.videoId };
-        socket.broadcast.emit('sync_play', time);
-    });
-
-    socket.on('pause_video', (time) => {
-        roomState = { state: 'paused', time: time, lastUpdate: Date.now(), videoId: roomState.videoId };
-        socket.broadcast.emit('sync_pause', time);
     });
 });
 

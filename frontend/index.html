@@ -16,7 +16,20 @@
         .result-title { font-size: 14px; font-weight: bold; }
         /* New Layout Wrappers */
         #main-layout { display: flex; gap: 20px; max-width: 1000px; margin-top: 20px; }
-        
+        /* Login Overlay */
+        #login-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 100;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .login-box {
+            background: #1e1e1e; padding: 30px; border-radius: 8px; width: 300px;
+            display: flex; flex-direction: column; gap: 15px;
+        }
+        .login-box h2 { margin: 0; text-align: center; }
+        .login-input { padding: 10px; border-radius: 5px; border: none; background: #333; color: white; font-size: 16px; }
+        .btn-primary { background: #e50914; color: white; border: none; padding: 12px; border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer; }
+        .btn-primary:hover { background: #f40612; }
         /* Chat UI */
         #chat-container { 
             width: 320px; background: #1e1e1e; border-radius: 8px; 
@@ -54,6 +67,14 @@
     </style>
 </head>
 <body>
+    <div id="login-overlay">
+        <div class="login-box">
+            <h2>Join Party</h2>
+            <input type="text" id="username-input" class="login-input" placeholder="Your Name" required>
+            <input type="text" id="room-input" class="login-input" placeholder="Room Code (e.g., 1234)" required>
+            <button id="btn-join-room" class="btn-primary">Join Room</button>
+        </div>
+    </div>
     <h1>Shared Watch Party</h1>
     
     <div class="status-box">
@@ -136,10 +157,8 @@
         }
 
         function onPlayerReady() {
-            player.mute(); 
             muteBtn.innerText = '🔇';
             volumeSlider.value = 0;
-            socket.emit('request_sync'); 
 
             // Timer to update the seek bar every half second
             setInterval(() => {
@@ -152,6 +171,30 @@
             }, 500);
         }
 
+        // ==========================================
+        // ROOM & LOGIN LOGIC (WP-104)
+        // ==========================================
+        document.getElementById('btn-join-room').addEventListener('click', () => {
+            const username = document.getElementById('username-input').value.trim();
+            const roomId = document.getElementById('room-input').value.trim();
+
+            if (!username || !roomId) return alert("Please enter both a name and a room code.");
+
+            // 1. Tell backend to put us in the room
+            socket.emit('join_room', { roomId, username });
+
+            // 2. Hide the login screen
+            document.getElementById('login-overlay').style.display = 'none';
+            document.getElementById('status').innerText = `Room: ${roomId} | User: ${username}`;
+
+            // 3. Unmute and fetch the video state (Autoplay is unlocked by this click!)
+            if (player && typeof player.unMute === 'function') {
+                player.unMute();
+                document.getElementById('btn-mute').innerText = '🔊';
+                document.getElementById('volume-slider').value = 100;
+                socket.emit('request_sync');
+            }
+        });
         // ==========================================
         // UI EVENT LISTENERS
         // ==========================================
