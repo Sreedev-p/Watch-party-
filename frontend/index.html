@@ -9,21 +9,24 @@
         .status-box { padding: 10px; margin-bottom: 20px; border-radius: 5px; background: #222; }
         #video-wrapper { width: 640px; }
         
-        /* Our Custom Control Bar */
         #custom-controls {
-            display: flex; gap: 10px; padding: 15px; background: #1e1e1e;
+            display: flex; gap: 15px; padding: 15px; background: #1e1e1e;
             border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
-            align-items: center; justify-content: center;
+            align-items: center; justify-content: space-between;
         }
         
-        .control-btn {
-            padding: 10px 20px; font-size: 16px; font-weight: bold; background: #333; 
-            color: white; border: none; border-radius: 5px; cursor: pointer; transition: 0.2s;
-        }
+        .control-group { display: flex; align-items: center; gap: 10px; }
         
-        .control-btn:hover { background: #555; }
-        .play-btn { background: #e50914; }
-        .play-btn:hover { background: #f40612; }
+        .icon-btn {
+            background: none; border: none; color: white; font-size: 20px; 
+            cursor: pointer; transition: 0.2s; padding: 5px;
+        }
+        .icon-btn:hover { color: #e50914; }
+        
+        /* Modern Slider Styling */
+        input[type=range] { cursor: pointer; accent-color: #e50914; }
+        #seek-bar { flex-grow: 1; width: 100%; }
+        #time-display { font-size: 14px; color: #aaa; min-width: 85px; text-align: center; }
     </style>
 </head>
 <body>
@@ -34,14 +37,22 @@
     </div>
 
     <div id="video-wrapper">
-        <!-- The YouTube IFrame -->
         <div id="player"></div>
         
-        <!-- Our Custom HTML Controls -->
+        <!-- Enhanced Control Deck -->
         <div id="custom-controls">
-            <button id="btn-play" class="control-btn play-btn">▶ Play</button>
-            <button id="btn-pause" class="control-btn">⏸ Pause</button>
-            <button id="btn-sync" class="control-btn">🔄 Force Sync</button>
+            <!-- Left: Play/Pause -->
+            <button id="btn-play-pause" class="icon-btn">▶</button>
+            
+            <!-- Center: Seek Bar & Time -->
+            <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
+            <span id="time-display">0:00 / 0:00</span>
+            
+            <!-- Right: Audio Controls -->
+            <div class="control-group">
+                <button id="btn-mute" class="icon-btn">🔊</button>
+                <input type="range" id="volume-slider" value="100" min="0" max="100">
+            </div>
         </div>
     </div>
 
@@ -51,14 +62,30 @@
     <script>
         const socket = io('http://localhost:3000');
         const statusElement = document.getElementById('status');
+        
+        // UI Elements
+        const playPauseBtn = document.getElementById('btn-play-pause');
+        const muteBtn = document.getElementById('btn-mute');
+        const volumeSlider = document.getElementById('volume-slider');
+        const seekBar = document.getElementById('seek-bar');
+        const timeDisplay = document.getElementById('time-display');
+
         let player;
         let isSyncing = false; 
         let syncFailsafe; 
+        let isDraggingSeek = false; // Prevents timer from fighting the user's mouse
 
         function blockEcho() {
             isSyncing = true;
             clearTimeout(syncFailsafe);
             syncFailsafe = setTimeout(() => { isSyncing = false; }, 1000);
+        }
+
+        // Helper: Format seconds into M:SS
+        function formatTime(seconds) {
+            const min = Math.floor(seconds / 60);
+            const sec = Math.floor(seconds % 60).toString().padStart(2, '0');
+            return `${min}:${sec}`;
         }
 
         socket.on('connect', () => {
@@ -69,48 +96,83 @@
         function onYouTubeIframeAPIReady() {
             player = new YT.Player('player', {
                 height: '390', width: '640', videoId: '8hP9D6kZseM', 
-                playerVars: { 
-                    'controls': 0, // completely hides the YouTube UI
-                    'disablekb': 1, 
-                    'rel': 0 
-                },
-                events: { 
-                    'onReady': onPlayerReady,
-                    'onStateChange': onPlayerStateChange 
-                }
+                playerVars: { 'controls': 0, 'disablekb': 1, 'rel': 0 },
+                events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange }
             });
         }
 
         function onPlayerReady() {
             player.mute(); 
+            muteBtn.innerText = '🔇';
+            volumeSlider.value = 0;
             socket.emit('request_sync'); 
+
+            // Timer to update the seek bar every half second
+            setInterval(() => {
+                if (player.getPlayerState() === 1 && !isDraggingSeek) {
+                    const current = player.getCurrentTime();
+                    const duration = player.getDuration();
+                    seekBar.value = (current / duration) * 100;
+                    timeDisplay.innerText = `${formatTime(current)} / ${formatTime(duration)}`;
+                }
+            }, 500);
         }
 
         // ==========================================
-        // CUSTOM CONTROL BAR LOGIC
+        // UI EVENT LISTENERS
         // ==========================================
         
-        document.getElementById('btn-play').addEventListener('click', () => {
-            // Unmute on the first human click so they don't have to click a separate unmute button
-            if (player.isMuted()) player.unMute(); 
+        playPauseBtn.addEventListener('click', () => {
+            if (player.getPlayerState() === 1) { // If playing, pause it
+                player.pauseVideo();
+                socket.emit('pause_video', player.getCurrentTime());
+            } else { // If paused, play it
+                player.playVideo();
+                socket.emit('play_video', player.getCurrentTime());
+            }
+        });
+
+        muteBtn.addEventListener('click', () => {
+            if (player.isMuted()) {
+                player.unMute();
+                muteBtn.innerText = '🔊';
+                volumeSlider.value = player.getVolume();
+            } else {
+                player.mute();
+                muteBtn.innerText = '🔇';
+                volumeSlider.value = 0;
+            }
+        });
+
+        volumeSlider.addEventListener('input', (e) => {
+            const vol = e.target.value;
+            player.setVolume(vol);
+            if (vol > 0 && player.isMuted()) {
+                player.unMute();
+                muteBtn.innerText = '🔊';
+            }
+        });
+
+        // Seek Bar Logic: Dragging vs Releasing
+        seekBar.addEventListener('mousedown', () => isDraggingSeek = true);
+        
+        seekBar.addEventListener('change', (e) => {
+            const newTime = (e.target.value / 100) * player.getDuration();
+            player.seekTo(newTime);
+            timeDisplay.innerText = `${formatTime(newTime)} / ${formatTime(player.getDuration())}`;
             
-            player.playVideo(); // Play locally
-            socket.emit('play_video', player.getCurrentTime()); // Tell the room
-        });
-
-        document.getElementById('btn-pause').addEventListener('click', () => {
-            player.pauseVideo();
-            socket.emit('pause_video', player.getCurrentTime());
-        });
-
-        document.getElementById('btn-sync').addEventListener('click', () => {
-            // A handy button to manually ask the server where we should be
-            socket.emit('request_sync');
+            // Tell the room we jumped
+            socket.emit('play_video', newTime);
+            isDraggingSeek = false;
         });
 
         // ==========================================
-        // SOCKET & SYNC LOGIC
+        // SYNC LOGIC & UI UPDATES
         // ==========================================
+
+        function updatePlayPauseUI(state) {
+            playPauseBtn.innerText = state === 1 ? '⏸' : '▶';
+        }
 
         socket.on('initial_state', (data) => {
             blockEcho();
@@ -123,23 +185,15 @@
         });
 
         function onPlayerStateChange(event) {
-            if (event.data === 3 || event.data === -1) return;
-
-            if (isSyncing) {
-                isSyncing = false;
-                clearTimeout(syncFailsafe);
-                return; 
-            }
+            if (event.data === 1 || event.data === 2) updatePlayPauseUI(event.data);
             
-            // We no longer need to emit from here because our custom buttons handle it!
-            // This completely kills the "boolean trap" bug.
+            if (event.data === 3 || event.data === -1) return;
+            if (isSyncing) { isSyncing = false; clearTimeout(syncFailsafe); return; }
         }
 
         socket.on('sync_play', (time) => {
             blockEcho();
-            if (Math.abs(player.getCurrentTime() - time) > 1) {
-                player.seekTo(time);
-            }
+            if (Math.abs(player.getCurrentTime() - time) > 1) player.seekTo(time);
             player.playVideo();
         });
 
