@@ -7,6 +7,13 @@
     <style>
         body { font-family: sans-serif; padding: 20px; background: #121212; color: white; }
         .status-box { padding: 10px; margin-bottom: 20px; border-radius: 5px; background: #222; }
+        #search-container { width: 640px; margin-bottom: 15px; display: flex; gap: 10px; }
+        #search-input { flex-grow: 1; padding: 10px; border-radius: 5px; border: none; background: #333; color: white; }
+        #search-results { width: 640px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+        .result-item { display: flex; gap: 10px; background: #1e1e1e; padding: 10px; border-radius: 5px; cursor: pointer; transition: 0.2s; }
+        .result-item:hover { background: #333; }
+        .result-thumb { width: 120px; border-radius: 5px; }
+        .result-title { font-size: 14px; font-weight: bold; }
         #video-wrapper { width: 640px; }
         
         #custom-controls {
@@ -35,6 +42,11 @@
     <div class="status-box">
         <strong>Status: </strong> <span id="status">Connecting...</span>
     </div>
+    <div id="search-container">
+        <input type="text" id="search-input" placeholder="Search YouTube...">
+        <button id="btn-search" class="control-btn">Search</button>
+    </div>
+    <div id="search-results"></div>
 
     <div id="video-wrapper">
         <div id="player"></div>
@@ -174,14 +186,82 @@
             playPauseBtn.innerText = state === 1 ? '⏸' : '▶';
         }
 
+        // Update this existing listener to load the correct video for late joiners
         socket.on('initial_state', (data) => {
             blockEcho();
-            player.seekTo(data.time);
-            if (data.state === 'playing') {
-                player.playVideo();
+            // If the server's video doesn't match our iframe's default, load it
+            // (Using a regex to extract the ID from the YouTube URL format)
+            const currentVideoUrl = player.getVideoUrl();
+            if (!currentVideoUrl.includes(data.videoId)) {
+                player.loadVideoById(data.videoId, data.time);
             } else {
-                player.pauseVideo();
+                player.seekTo(data.time);
             }
+
+            if (data.state === 'playing') player.playVideo();
+            else player.pauseVideo();
+        });
+
+        // ==========================================
+        // SEARCH & VIDEO SWITCHING LOGIC (WP-102)
+        // ==========================================
+
+        document.getElementById('btn-search').addEventListener('click', () => {
+            const query = document.getElementById('search-input').value;
+            if (query) socket.emit('search_youtube', query);
+        });
+
+        socket.on('search_results', (items) => {
+            const resultsContainer = document.getElementById('search-results');
+            resultsContainer.innerHTML = ''; // Clear old results
+
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'result-item';
+                div.innerHTML = `
+                    <img src="${item.snippet.thumbnails.default.url}" class="result-thumb">
+                    <div class="result-title">${item.snippet.title}</div>
+                `;
+                
+                // When clicked, tell the server to change the video for everyone
+                div.addEventListener('click', () => {
+                    socket.emit('change_video', item.id.videoId);
+                    resultsContainer.innerHTML = ''; // Hide results
+                    document.getElementById('search-input').value = '';
+                });
+                
+                resultsContainer.appendChild(div);
+            });
+        });
+
+
+        // ==========================================
+// SEARCH & VIDEO SWITCHING LOGIC (WP-102)
+// ==========================================
+
+let debounceTimer;
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+    const query = e.target.value;
+
+    // Clear the previous timer every time a new key is pressed
+    clearTimeout(debounceTimer);
+
+    if (query.trim().length > 0) {
+        // Start a new 500ms countdown before emitting to the server
+        debounceTimer = setTimeout(() => {
+            socket.emit('search_youtube', query);
+        }, 500);
+    } else {
+        // Instantly clear the results if they backspace the whole query
+        document.getElementById('search-results').innerHTML = '';
+    }
+});
+        // When anyone changes the video, load it instantly
+        socket.on('load_new_video', (videoId) => {
+            blockEcho();
+            player.loadVideoById(videoId, 0); // Start at 0:00
+            player.playVideo();
         });
 
         function onPlayerStateChange(event) {
