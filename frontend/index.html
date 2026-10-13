@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch Party UI</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #121212; color: white; }
+        .status-box { padding: 10px; margin-bottom: 20px; border-radius: 5px; background: #222; }
+        #video-wrapper { width: 640px; }
+        
+        /* Our Custom Control Bar */
+        #custom-controls {
+            display: flex; gap: 10px; padding: 15px; background: #1e1e1e;
+            border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+            align-items: center; justify-content: center;
+        }
+        
+        .control-btn {
+            padding: 10px 20px; font-size: 16px; font-weight: bold; background: #333; 
+            color: white; border: none; border-radius: 5px; cursor: pointer; transition: 0.2s;
+        }
+        
+        .control-btn:hover { background: #555; }
+        .play-btn { background: #e50914; }
+        .play-btn:hover { background: #f40612; }
+    </style>
+</head>
+<body>
+    <h1>Shared Watch Party</h1>
+    
+    <div class="status-box">
+        <strong>Status: </strong> <span id="status">Connecting...</span>
+    </div>
+
+    <div id="video-wrapper">
+        <!-- The YouTube IFrame -->
+        <div id="player"></div>
+        
+        <!-- Our Custom HTML Controls -->
+        <div id="custom-controls">
+            <button id="btn-play" class="control-btn play-btn">▶ Play</button>
+            <button id="btn-pause" class="control-btn">⏸ Pause</button>
+            <button id="btn-sync" class="control-btn">🔄 Force Sync</button>
+        </div>
+    </div>
+
+    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+    
+    <script>
+        const socket = io('http://localhost:3000');
+        const statusElement = document.getElementById('status');
+        let player;
+        let isSyncing = false; 
+        let syncFailsafe; 
+
+        function blockEcho() {
+            isSyncing = true;
+            clearTimeout(syncFailsafe);
+            syncFailsafe = setTimeout(() => { isSyncing = false; }, 1000);
+        }
+
+        socket.on('connect', () => {
+            statusElement.innerText = `Online (ID: ${socket.id})`;
+            statusElement.style.color = '#00ff00';
+        });
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('player', {
+                height: '390', width: '640', videoId: '8hP9D6kZseM', 
+                playerVars: { 
+                    'controls': 0, // completely hides the YouTube UI
+                    'disablekb': 1, 
+                    'rel': 0 
+                },
+                events: { 
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange 
+                }
+            });
+        }
+
+        function onPlayerReady() {
+            player.mute(); 
+            socket.emit('request_sync'); 
+        }
+
+        // ==========================================
+        // CUSTOM CONTROL BAR LOGIC
+        // ==========================================
+        
+        document.getElementById('btn-play').addEventListener('click', () => {
+            // Unmute on the first human click so they don't have to click a separate unmute button
+            if (player.isMuted()) player.unMute(); 
+            
+            player.playVideo(); // Play locally
+            socket.emit('play_video', player.getCurrentTime()); // Tell the room
+        });
+
+        document.getElementById('btn-pause').addEventListener('click', () => {
+            player.pauseVideo();
+            socket.emit('pause_video', player.getCurrentTime());
+        });
+
+        document.getElementById('btn-sync').addEventListener('click', () => {
+            // A handy button to manually ask the server where we should be
+            socket.emit('request_sync');
+        });
+
+        // ==========================================
+        // SOCKET & SYNC LOGIC
+        // ==========================================
+
+        socket.on('initial_state', (data) => {
+            blockEcho();
+            player.seekTo(data.time);
+            if (data.state === 'playing') {
+                player.playVideo();
+            } else {
+                player.pauseVideo();
+            }
+        });
+
+        function onPlayerStateChange(event) {
+            if (event.data === 3 || event.data === -1) return;
+
+            if (isSyncing) {
+                isSyncing = false;
+                clearTimeout(syncFailsafe);
+                return; 
+            }
+            
+            // We no longer need to emit from here because our custom buttons handle it!
+            // This completely kills the "boolean trap" bug.
+        }
+
+        socket.on('sync_play', (time) => {
+            blockEcho();
+            if (Math.abs(player.getCurrentTime() - time) > 1) {
+                player.seekTo(time);
+            }
+            player.playVideo();
+        });
+
+        socket.on('sync_pause', (time) => {
+            blockEcho();
+            player.seekTo(time);
+            player.pauseVideo();
+        });
+    </script>
+</body>
+</html>
