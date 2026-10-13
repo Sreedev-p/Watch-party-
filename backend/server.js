@@ -1,15 +1,19 @@
-require('dotenv').config(); // Load the hidden API key
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path'); 
 
 const app = express();
 app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
-// Added 'videoId' to the global state
+// 2. MIDDLEWARE
+app.use(express.static(path.join(__dirname, '../frontend')));
+// NEW: Use the cloud provider's assigned port, or 3000 if running locally
+
 let roomState = { 
     state: 'paused', 
     time: 0, 
@@ -149,4 +153,5 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(3000, () => console.log(`Server running on port 3000`));
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Production server running on port ${PORT}`));
