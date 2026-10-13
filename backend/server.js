@@ -44,6 +44,7 @@ io.on('connection', (socket) => {
         }
     });
     socket.on('join_room', ({ roomId, username }) => {
+        
         socket.join(roomId); // Socket.io groups this user into the room
         
         // Save the data to this specific user's socket connection
@@ -51,8 +52,13 @@ io.on('connection', (socket) => {
         socket.username = username;
 
         // If this is the first person in the room, initialize the default state
+        // Inside socket.on('join_room', ...)
         if (!rooms[roomId]) {
-            rooms[roomId] = { state: 'paused', time: 0, lastUpdate: Date.now(), videoId: '8hP9D6kZseM' };
+            rooms[roomId] = { 
+                state: 'paused', time: 0, lastUpdate: Date.now(), videoId: '8hP9D6kZseM', 
+                queue: [], 
+                lastQueuePop: 0 // NEW: A dedicated clock just for the queue lock
+            };
         }
 
         // Announce the arrival to everyone ELSE in that room
@@ -60,6 +66,34 @@ io.on('connection', (socket) => {
             sender: 'System', 
             text: `${username} joined the watch party.` 
         });
+    });
+
+    // Add a video to the back of the queue
+    socket.on('add_to_queue', (videoData) => {
+        if (!socket.roomId) return;
+        rooms[socket.roomId].queue.push(videoData);
+        io.to(socket.roomId).emit('update_queue', rooms[socket.roomId].queue);
+    });
+
+    // Handle a video ending
+    socket.on('video_ended', () => {
+        if (!socket.roomId) return;
+        const room = rooms[socket.roomId];
+        
+        // Use the dedicated queue timer instead of the general lastUpdate timer
+        if (Date.now() - room.lastQueuePop < 5000) return;
+
+        if (room.queue.length > 0) {
+            const nextVideo = room.queue.shift(); 
+            room.videoId = nextVideo.videoId;
+            room.time = 0;
+            room.state = 'playing';
+            room.lastUpdate = Date.now(); 
+            room.lastQueuePop = Date.now(); // Reset the specific queue lock
+            
+            io.to(socket.roomId).emit('load_new_video', nextVideo.videoId);
+            io.to(socket.roomId).emit('update_queue', room.queue);
+        }
     });
 
     // 2. Sync requests now pull from the user's specific room
