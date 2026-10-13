@@ -14,6 +14,23 @@
         .result-item:hover { background: #333; }
         .result-thumb { width: 120px; border-radius: 5px; }
         .result-title { font-size: 14px; font-weight: bold; }
+        /* New Layout Wrappers */
+        #main-layout { display: flex; gap: 20px; max-width: 1000px; margin-top: 20px; }
+        
+        /* Chat UI */
+        #chat-container { 
+            width: 320px; background: #1e1e1e; border-radius: 8px; 
+            display: flex; flex-direction: column; padding: 15px;
+        }
+        #chat-messages { 
+            flex-grow: 1; height: 350px; overflow-y: auto; 
+            display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; 
+        }
+        .chat-msg { background: #333; padding: 8px 12px; border-radius: 5px; font-size: 14px; word-wrap: break-word; }
+        .chat-sender { font-weight: bold; color: #e50914; margin-right: 5px; }
+        
+        #chat-input-container { display: flex; gap: 10px; }
+        #chat-input { flex-grow: 1; padding: 10px; border-radius: 5px; border: none; background: #333; color: white; }
         #video-wrapper { width: 640px; }
         
         #custom-controls {
@@ -48,22 +65,27 @@
     </div>
     <div id="search-results"></div>
 
-    <div id="video-wrapper">
-        <div id="player"></div>
-        
-        <!-- Enhanced Control Deck -->
-        <div id="custom-controls">
-            <!-- Left: Play/Pause -->
-            <button id="btn-play-pause" class="icon-btn">▶</button>
-            
-            <!-- Center: Seek Bar & Time -->
-            <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
-            <span id="time-display">0:00 / 0:00</span>
-            
-            <!-- Right: Audio Controls -->
-            <div class="control-group">
-                <button id="btn-mute" class="icon-btn">🔊</button>
-                <input type="range" id="volume-slider" value="100" min="0" max="100">
+    <div id="main-layout">
+        <!-- Left Side: The Video Player (Unchanged) -->
+        <div id="video-wrapper">
+            <div id="player"></div>
+            <div id="custom-controls">
+                <button id="btn-play-pause" class="icon-btn">▶</button>
+                <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
+                <span id="time-display">0:00 / 0:00</span>
+                <div class="control-group">
+                    <button id="btn-mute" class="icon-btn">🔇</button>
+                    <input type="range" id="volume-slider" value="0" min="0" max="100">
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Side: The Chat Box (NEW) -->
+        <div id="chat-container">
+            <div id="chat-messages"></div>
+            <div id="chat-input-container">
+                <input type="text" id="chat-input" placeholder="Type a message...">
+                <button id="btn-send-chat" class="control-btn">Send</button>
             </div>
         </div>
     </div>
@@ -281,6 +303,50 @@ document.getElementById('search-input').addEventListener('input', (e) => {
             blockEcho();
             player.seekTo(time);
             player.pauseVideo();
+
+        });
+        // ==========================================
+        // LIVE CHAT LOGIC (WP-103)
+        // ==========================================
+        const chatInput = document.getElementById('chat-input');
+        const chatMessages = document.getElementById('chat-messages');
+
+        function sendMessage() {
+            const text = chatInput.value.trim();
+            if (text.length > 0) {
+                socket.emit('chat_message', text);
+                chatInput.value = ''; // Clear the input box
+            }
+        }
+
+        // Send on button click
+        document.getElementById('btn-send-chat').addEventListener('click', sendMessage);
+
+        // Send on 'Enter' key press
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Receive messages from the server
+        socket.on('chat_message', (data) => {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'chat-msg';
+            
+            // 1. Safely create the sender label
+            const senderSpan = document.createElement('span');
+            senderSpan.className = 'chat-sender';
+            senderSpan.textContent = `${data.sender}: `;
+            
+            // 2. Safely create the message text
+            const textSpan = document.createElement('span');
+            textSpan.textContent = data.text;
+            
+            // 3. Append them to the container
+            msgDiv.appendChild(senderSpan);
+            msgDiv.appendChild(textSpan);
+            
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll
         });
     </script>
 </body>
