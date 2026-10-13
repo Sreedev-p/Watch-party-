@@ -84,6 +84,10 @@
         <input type="text" id="search-input" placeholder="Search YouTube...">
         <button id="btn-search" class="control-btn">Search</button>
     </div>
+    <div id="queue-container" style="margin-bottom: 20px; background: #1e1e1e; padding: 10px; border-radius: 5px;">
+        <h3 style="margin-top: 0;">Up Next</h3>
+        <div id="queue-list" style="font-size: 14px; color: #aaa;">Queue is empty.</div>
+    </div>
     <div id="search-results"></div>
 
     <div id="main-layout">
@@ -278,7 +282,7 @@
 
         socket.on('search_results', (items) => {
             const resultsContainer = document.getElementById('search-results');
-            resultsContainer.innerHTML = ''; // Clear old results
+            resultsContainer.innerHTML = ''; 
 
             items.forEach(item => {
                 const div = document.createElement('div');
@@ -286,12 +290,16 @@
                 div.innerHTML = `
                     <img src="${item.snippet.thumbnails.default.url}" class="result-thumb">
                     <div class="result-title">${item.snippet.title}</div>
+                    <button class="control-btn" style="margin-left: auto;">+ Queue</button>
                 `;
                 
-                // When clicked, tell the server to change the video for everyone
+                // Add to queue instead of overriding
                 div.addEventListener('click', () => {
-                    socket.emit('change_video', item.id.videoId);
-                    resultsContainer.innerHTML = ''; // Hide results
+                    socket.emit('add_to_queue', {
+                        videoId: item.id.videoId,
+                        title: item.snippet.title
+                    });
+                    resultsContainer.innerHTML = ''; 
                     document.getElementById('search-input').value = '';
                 });
                 
@@ -299,6 +307,15 @@
             });
         });
 
+
+        socket.on('update_queue', (queue) => {
+            const list = document.getElementById('queue-list');
+            if (queue.length === 0) {
+                list.innerHTML = 'Queue is empty.';
+            } else {
+                list.innerHTML = queue.map((v, index) => `<div>${index + 1}. ${v.title}</div>`).join('');
+            }
+        });
 
         // ==========================================
 // SEARCH & VIDEO SWITCHING LOGIC (WP-102)
@@ -332,6 +349,12 @@ document.getElementById('search-input').addEventListener('input', (e) => {
         function onPlayerStateChange(event) {
             if (event.data === 1 || event.data === 2) updatePlayPauseUI(event.data);
             
+            // NEW: Trigger the next video when the current one finishes
+            if (event.data === 0) {
+                socket.emit('video_ended');
+                return;
+            }
+
             if (event.data === 3 || event.data === -1) return;
             if (isSyncing) { isSyncing = false; clearTimeout(syncFailsafe); return; }
         }
