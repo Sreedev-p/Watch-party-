@@ -3,95 +3,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Watch Party UI</title>
-    <style>
-        body { font-family: sans-serif; padding: 20px; background: #121212; color: white; }
-        .status-box { padding: 10px; margin-bottom: 20px; border-radius: 5px; background: #222; }
-        #search-container { width: 640px; margin-bottom: 15px; display: flex; gap: 10px; }
-        #search-input { flex-grow: 1; padding: 10px; border-radius: 5px; border: none; background: #333; color: white; }
-        #search-results { width: 640px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
-        .result-item { display: flex; gap: 10px; background: #1e1e1e; padding: 10px; border-radius: 5px; cursor: pointer; transition: 0.2s; }
-        .result-item:hover { background: #333; }
-        .result-thumb { width: 120px; border-radius: 5px; }
-        .result-title { font-size: 14px; font-weight: bold; }
-        /* New Layout Wrappers */
-        #main-layout { display: flex; gap: 20px; max-width: 1000px; margin-top: 20px; }
-        /* Login Overlay */
-        #login-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9); z-index: 100;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .login-box {
-            background: #1e1e1e; padding: 30px; border-radius: 8px; width: 300px;
-            display: flex; flex-direction: column; gap: 15px;
-        }
-        .login-box h2 { margin: 0; text-align: center; }
-        .login-input { padding: 10px; border-radius: 5px; border: none; background: #333; color: white; font-size: 16px; }
-        .btn-primary { background: #e50914; color: white; border: none; padding: 12px; border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer; }
-        .btn-primary:hover { background: #f40612; }
-        /* Chat UI */
-        #chat-container { 
-            width: 320px; background: #1e1e1e; border-radius: 8px; 
-            display: flex; flex-direction: column; padding: 15px;
-        }
-        #chat-messages { 
-            flex-grow: 1; height: 350px; overflow-y: auto; 
-            display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; 
-        }
-        .chat-msg { background: #333; padding: 8px 12px; border-radius: 5px; font-size: 14px; word-wrap: break-word; }
-        .chat-sender { font-weight: bold; color: #e50914; margin-right: 5px; }
-        
-        #chat-input-container { display: flex; gap: 10px; }
-        #chat-input { flex-grow: 1; padding: 10px; border-radius: 5px; border: none; background: #333; color: white; }
-        #video-wrapper { width: 640px; }
-        
-        #custom-controls {
-            display: flex; gap: 15px; padding: 15px; background: #1e1e1e;
-            border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
-            align-items: center; justify-content: space-between;
-        }
-        
-        .control-group { display: flex; align-items: center; gap: 10px; }
-        
-        .icon-btn {
-            background: none; border: none; color: white; font-size: 20px; 
-            cursor: pointer; transition: 0.2s; padding: 5px;
-        }
-        .icon-btn:hover { color: #e50914; }
-        
-        /* Modern Slider Styling */
-        input[type=range] { cursor: pointer; accent-color: #e50914; }
-        #seek-bar { flex-grow: 1; width: 100%; }
-        #time-display { font-size: 14px; color: #aaa; min-width: 85px; text-align: center; }
-    </style>
+    <title>Watch Party</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+    <!-- Login & Public Lobby Overlay (WP-104 & WP-106) -->
     <div id="login-overlay">
         <div class="login-box">
-            <h2>Join Party</h2>
+            <h2>Watch Party</h2>
+            <div id="login-alert" style="display:none; padding: 8px; border-radius: 4px; font-size: 13px; text-align: center;"></div>
+            
             <input type="text" id="username-input" class="login-input" placeholder="Your Name" required>
             <input type="text" id="room-input" class="login-input" placeholder="Room Code (e.g., 1234)" required>
-            <button id="btn-join-room" class="btn-primary">Join Room</button>
+            
+            <label class="checkbox-label" title="Only applies when creating a new room">
+                <input type="checkbox" id="public-checkbox"> Make Public (when creating)
+            </label>
+
+            <div style="display: flex; gap: 10px;">
+                <button id="btn-create-room" class="btn-primary" style="flex: 1;">Create Room</button>
+                <button id="btn-join-room" class="control-btn" style="flex: 1; font-weight: bold; font-size: 15px;">Join Room</button>
+            </div>
+
+            <div id="public-rooms-section">
+                <h4>Active Public Rooms</h4>
+                <div id="public-rooms-list">
+                    <div style="font-size: 12px; color: #666;">No public rooms active.</div>
+                </div>
+            </div>
         </div>
     </div>
-    <h1>Shared Watch Party</h1>
-    
+
+    <!-- Header Status -->
     <div class="status-box">
-        <strong>Status: </strong> <span id="status">Connecting...</span>
+        <span id="status">Waiting to join room...</span>
     </div>
+    <!-- Host Knock Approval Banner -->
+    <div id="knock-container" style="width: 640px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
+    <!-- Live Debounced Search (WP-102) -->
     <div id="search-container">
-        <input type="text" id="search-input" placeholder="Search YouTube...">
-        <button id="btn-search" class="control-btn">Search</button>
-    </div>
-    <div id="queue-container" style="margin-bottom: 20px; background: #1e1e1e; padding: 10px; border-radius: 5px;">
-        <h3 style="margin-top: 0;">Up Next</h3>
-        <div id="queue-list" style="font-size: 14px; color: #aaa;">Queue is empty.</div>
+        <input type="text" id="search-input" placeholder="Search YouTube to add to queue...">
     </div>
     <div id="search-results"></div>
 
+    <!-- Video Queue UI (WP-105) -->
+    <div id="queue-container">
+        <h4 style="margin: 0 0 6px 0;">Up Next</h4>
+        <div id="queue-list" style="font-size: 13px; color: #aaa;">Queue is empty.</div>
+    </div>
+
+    <!-- Main Content Layout -->
     <div id="main-layout">
-        <!-- Left Side: The Video Player (Unchanged) -->
+        <!-- Video Player -->
         <div id="video-wrapper">
             <div id="player"></div>
             <div id="custom-controls">
@@ -105,7 +69,7 @@
             </div>
         </div>
 
-        <!-- Right Side: The Chat Box (NEW) -->
+        <!-- Live Chat Sidebar (WP-103) -->
         <div id="chat-container">
             <div id="chat-messages"></div>
             <div id="chat-input-container">
@@ -115,305 +79,9 @@
         </div>
     </div>
 
-    <script src="http://localhost:3000/socket.io/socket.io.js"></script>
+    <!-- External Libraries & App Script -->
+    <script src="/socket.io/socket.io.js"></script>
     <script src="https://www.youtube.com/iframe_api"></script>
-    
-    <script>
-        const socket = io('http://localhost:3000');
-        const statusElement = document.getElementById('status');
-        
-        // UI Elements
-        const playPauseBtn = document.getElementById('btn-play-pause');
-        const muteBtn = document.getElementById('btn-mute');
-        const volumeSlider = document.getElementById('volume-slider');
-        const seekBar = document.getElementById('seek-bar');
-        const timeDisplay = document.getElementById('time-display');
-
-        let player;
-        let isSyncing = false; 
-        let syncFailsafe; 
-        let isDraggingSeek = false; // Prevents timer from fighting the user's mouse
-
-        function blockEcho() {
-            isSyncing = true;
-            clearTimeout(syncFailsafe);
-            syncFailsafe = setTimeout(() => { isSyncing = false; }, 1000);
-        }
-
-        // Helper: Format seconds into M:SS
-        function formatTime(seconds) {
-            const min = Math.floor(seconds / 60);
-            const sec = Math.floor(seconds % 60).toString().padStart(2, '0');
-            return `${min}:${sec}`;
-        }
-
-        socket.on('connect', () => {
-            statusElement.innerText = `Online (ID: ${socket.id})`;
-            statusElement.style.color = '#00ff00';
-        });
-
-        function onYouTubeIframeAPIReady() {
-            player = new YT.Player('player', {
-                height: '390', width: '640', videoId: '8hP9D6kZseM', 
-                playerVars: { 'controls': 0, 'disablekb': 1, 'rel': 0 },
-                events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange }
-            });
-        }
-
-        function onPlayerReady() {
-            muteBtn.innerText = '🔇';
-            volumeSlider.value = 0;
-
-            // Timer to update the seek bar every half second
-            setInterval(() => {
-                if (player.getPlayerState() === 1 && !isDraggingSeek) {
-                    const current = player.getCurrentTime();
-                    const duration = player.getDuration();
-                    seekBar.value = (current / duration) * 100;
-                    timeDisplay.innerText = `${formatTime(current)} / ${formatTime(duration)}`;
-                }
-            }, 500);
-        }
-
-        // ==========================================
-        // ROOM & LOGIN LOGIC (WP-104)
-        // ==========================================
-        document.getElementById('btn-join-room').addEventListener('click', () => {
-            const username = document.getElementById('username-input').value.trim();
-            const roomId = document.getElementById('room-input').value.trim();
-
-            if (!username || !roomId) return alert("Please enter both a name and a room code.");
-
-            // 1. Tell backend to put us in the room
-            socket.emit('join_room', { roomId, username });
-
-            // 2. Hide the login screen
-            document.getElementById('login-overlay').style.display = 'none';
-            document.getElementById('status').innerText = `Room: ${roomId} | User: ${username}`;
-
-            // 3. Unmute and fetch the video state (Autoplay is unlocked by this click!)
-            if (player && typeof player.unMute === 'function') {
-                player.unMute();
-                document.getElementById('btn-mute').innerText = '🔊';
-                document.getElementById('volume-slider').value = 100;
-                socket.emit('request_sync');
-            }
-        });
-        // ==========================================
-        // UI EVENT LISTENERS
-        // ==========================================
-        
-        playPauseBtn.addEventListener('click', () => {
-            if (player.getPlayerState() === 1) { // If playing, pause it
-                player.pauseVideo();
-                socket.emit('pause_video', player.getCurrentTime());
-            } else { // If paused, play it
-                player.playVideo();
-                socket.emit('play_video', player.getCurrentTime());
-            }
-        });
-
-        muteBtn.addEventListener('click', () => {
-            if (player.isMuted()) {
-                player.unMute();
-                muteBtn.innerText = '🔊';
-                volumeSlider.value = player.getVolume();
-            } else {
-                player.mute();
-                muteBtn.innerText = '🔇';
-                volumeSlider.value = 0;
-            }
-        });
-
-        volumeSlider.addEventListener('input', (e) => {
-            const vol = e.target.value;
-            player.setVolume(vol);
-            if (vol > 0 && player.isMuted()) {
-                player.unMute();
-                muteBtn.innerText = '🔊';
-            }
-        });
-
-        // Seek Bar Logic: Dragging vs Releasing
-        seekBar.addEventListener('mousedown', () => isDraggingSeek = true);
-        
-        seekBar.addEventListener('change', (e) => {
-            const newTime = (e.target.value / 100) * player.getDuration();
-            player.seekTo(newTime);
-            timeDisplay.innerText = `${formatTime(newTime)} / ${formatTime(player.getDuration())}`;
-            
-            // Tell the room we jumped
-            socket.emit('play_video', newTime);
-            isDraggingSeek = false;
-        });
-
-        // ==========================================
-        // SYNC LOGIC & UI UPDATES
-        // ==========================================
-
-        function updatePlayPauseUI(state) {
-            playPauseBtn.innerText = state === 1 ? '⏸' : '▶';
-        }
-
-        // Update this existing listener to load the correct video for late joiners
-        socket.on('initial_state', (data) => {
-            blockEcho();
-            // If the server's video doesn't match our iframe's default, load it
-            // (Using a regex to extract the ID from the YouTube URL format)
-            const currentVideoUrl = player.getVideoUrl();
-            if (!currentVideoUrl.includes(data.videoId)) {
-                player.loadVideoById(data.videoId, data.time);
-            } else {
-                player.seekTo(data.time);
-            }
-
-            if (data.state === 'playing') player.playVideo();
-            else player.pauseVideo();
-        });
-
-        // ==========================================
-        // SEARCH & VIDEO SWITCHING LOGIC (WP-102)
-        // ==========================================
-
-        document.getElementById('btn-search').addEventListener('click', () => {
-            const query = document.getElementById('search-input').value;
-            if (query) socket.emit('search_youtube', query);
-        });
-
-        socket.on('search_results', (items) => {
-            const resultsContainer = document.getElementById('search-results');
-            resultsContainer.innerHTML = ''; 
-
-            items.forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'result-item';
-                div.innerHTML = `
-                    <img src="${item.snippet.thumbnails.default.url}" class="result-thumb">
-                    <div class="result-title">${item.snippet.title}</div>
-                    <button class="control-btn" style="margin-left: auto;">+ Queue</button>
-                `;
-                
-                // Add to queue instead of overriding
-                div.addEventListener('click', () => {
-                    socket.emit('add_to_queue', {
-                        videoId: item.id.videoId,
-                        title: item.snippet.title
-                    });
-                    resultsContainer.innerHTML = ''; 
-                    document.getElementById('search-input').value = '';
-                });
-                
-                resultsContainer.appendChild(div);
-            });
-        });
-
-
-        socket.on('update_queue', (queue) => {
-            const list = document.getElementById('queue-list');
-            if (queue.length === 0) {
-                list.innerHTML = 'Queue is empty.';
-            } else {
-                list.innerHTML = queue.map((v, index) => `<div>${index + 1}. ${v.title}</div>`).join('');
-            }
-        });
-
-        // ==========================================
-// SEARCH & VIDEO SWITCHING LOGIC (WP-102)
-// ==========================================
-
-let debounceTimer;
-
-document.getElementById('search-input').addEventListener('input', (e) => {
-    const query = e.target.value;
-
-    // Clear the previous timer every time a new key is pressed
-    clearTimeout(debounceTimer);
-
-    if (query.trim().length > 0) {
-        // Start a new 500ms countdown before emitting to the server
-        debounceTimer = setTimeout(() => {
-            socket.emit('search_youtube', query);
-        }, 500);
-    } else {
-        // Instantly clear the results if they backspace the whole query
-        document.getElementById('search-results').innerHTML = '';
-    }
-});
-        // When anyone changes the video, load it instantly
-        socket.on('load_new_video', (videoId) => {
-            blockEcho();
-            player.loadVideoById(videoId, 0); // Start at 0:00
-            player.playVideo();
-        });
-
-        function onPlayerStateChange(event) {
-            if (event.data === 1 || event.data === 2) updatePlayPauseUI(event.data);
-            
-            // NEW: Trigger the next video when the current one finishes
-            if (event.data === 0) {
-                socket.emit('video_ended');
-                return;
-            }
-
-            if (event.data === 3 || event.data === -1) return;
-            if (isSyncing) { isSyncing = false; clearTimeout(syncFailsafe); return; }
-        }
-
-        socket.on('sync_play', (time) => {
-            blockEcho();
-            if (Math.abs(player.getCurrentTime() - time) > 1) player.seekTo(time);
-            player.playVideo();
-        });
-
-        socket.on('sync_pause', (time) => {
-            blockEcho();
-            player.seekTo(time);
-            player.pauseVideo();
-
-        });
-        // ==========================================
-        // LIVE CHAT LOGIC (WP-103)
-        // ==========================================
-        const chatInput = document.getElementById('chat-input');
-        const chatMessages = document.getElementById('chat-messages');
-
-        function sendMessage() {
-            const text = chatInput.value.trim();
-            if (text.length > 0) {
-                socket.emit('chat_message', text);
-                chatInput.value = ''; // Clear the input box
-            }
-        }
-
-        // Send on button click
-        document.getElementById('btn-send-chat').addEventListener('click', sendMessage);
-
-        // Send on 'Enter' key press
-        chatInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
-
-        // Receive messages from the server
-        socket.on('chat_message', (data) => {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = 'chat-msg';
-            
-            // 1. Safely create the sender label
-            const senderSpan = document.createElement('span');
-            senderSpan.className = 'chat-sender';
-            senderSpan.textContent = `${data.sender}: `;
-            
-            // 2. Safely create the message text
-            const textSpan = document.createElement('span');
-            textSpan.textContent = data.text;
-            
-            // 3. Append them to the container
-            msgDiv.appendChild(senderSpan);
-            msgDiv.appendChild(textSpan);
-            
-            chatMessages.appendChild(msgDiv);
-            chatMessages.scrollTop = chatMessages.scrollHeight; // Auto-scroll
-        });
-    </script>
+    <script src="app.js"></script>
 </body>
 </html>

@@ -1,0 +1,302 @@
+/* Base & Layout */
+body {
+    background-color: #121212;
+    color: #ffffff;
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0;
+    padding: 20px;
+}
+
+.status-box {
+    background: #1e1e1e;
+    padding: 8px 16px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    font-size: 14px;
+    color: #aaa;
+}
+
+#main-layout {
+    display: flex;
+    gap: 20px;
+    max-width: 1000px;
+    margin-top: 10px;
+}
+
+/* Login Overlay & Public Lobby (WP-104 & WP-106) */
+#login-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.92);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.login-box {
+    background: #1e1e1e;
+    padding: 30px;
+    border-radius: 8px;
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.login-box h2 {
+    margin: 0;
+    text-align: center;
+}
+
+.login-input {
+    padding: 10px;
+    border-radius: 5px;
+    border: none;
+    background: #333;
+    color: white;
+    font-size: 15px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #ccc;
+    cursor: pointer;
+}
+
+.btn-primary {
+    background: #e50914;
+    color: white;
+    border: none;
+    padding: 12px;
+    border-radius: 5px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.btn-primary:hover {
+    background: #f40612;
+}
+
+#public-rooms-section {
+    border-top: 1px solid #333;
+    padding-top: 12px;
+    margin-top: 5px;
+}
+
+#public-rooms-section h4 {
+    margin: 0 0 8px 0;
+    font-size: 12px;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#public-rooms-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.public-room-item {
+    background: #2a2a2a;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.public-room-item:hover {
+    background: #3a3a3a;
+}
+
+.badge-count {
+    background: #e50914;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+/* Search & Queue (WP-102 & WP-105) */
+#search-container {
+    width: 640px;
+    margin-bottom: 10px;
+    display: flex;
+    gap: 10px;
+}
+
+#search-input {
+    flex-grow: 1;
+    padding: 10px;
+    border-radius: 5px;
+    border: none;
+    background: #333;
+    color: white;
+}
+
+#search-results {
+    width: 640px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+
+.result-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #1e1e1e;
+    padding: 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.result-item:hover {
+    background: #333;
+}
+
+.result-thumb {
+    width: 100px;
+    border-radius: 4px;
+}
+
+.result-title {
+    font-size: 14px;
+    font-weight: bold;
+    flex-grow: 1;
+}
+
+#queue-container {
+    width: 620px;
+    margin-bottom: 15px;
+    background: #1e1e1e;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+/* Video Player & Custom Controls */
+#video-wrapper {
+    width: 640px;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+}
+
+#player {
+    width: 100%;
+    height: 360px;
+    pointer-events: none;
+}
+
+#custom-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #1e1e1e;
+    padding: 10px 15px;
+}
+
+.icon-btn, .control-btn {
+    background: #333;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.icon-btn:hover, .control-btn:hover {
+    background: #444;
+}
+
+#seek-bar {
+    flex-grow: 1;
+    cursor: pointer;
+}
+
+#time-display {
+    font-size: 12px;
+    color: #ccc;
+    min-width: 85px;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#volume-slider {
+    width: 70px;
+    cursor: pointer;
+}
+
+/* Live Chat (WP-103) */
+#chat-container {
+    width: 320px;
+    background: #1e1e1e;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    padding: 15px;
+}
+
+#chat-messages {
+    flex-grow: 1;
+    height: 350px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.chat-msg {
+    background: #333;
+    padding: 8px 12px;
+    border-radius: 5px;
+    font-size: 14px;
+    word-wrap: break-word;
+}
+
+.chat-sender {
+    font-weight: bold;
+    color: #e50914;
+    margin-right: 5px;
+}
+
+#chat-input-container {
+    display: flex;
+    gap: 10px;
+}
+
+#chat-input {
+    flex-grow: 1;
+    padding: 10px;
+    border-radius: 5px;
+    border: none;
+    background: #333;
+    color: white;
+}

@@ -3,104 +3,122 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const path = require('path'); 
+const path = require('path');
 
 const app = express();
 app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
-// 2. MIDDLEWARE
+// Serve the modular frontend folder
 app.use(express.static(path.join(__dirname, '../frontend')));
-// NEW: Use the cloud provider's assigned port, or 3000 if running locally
 
-let roomState = { 
-    state: 'paused', 
-    time: 0, 
-    lastUpdate: Date.now(),
-    videoId: '8hP9D6kZseM' 
-};
-
-// --- NEW: Dictionary to hold multiple rooms ---
+// In-Memory Room Dictionary
 const rooms = {};
+
+// Helper to compile a list of active public rooms for the lobby
+function getPublicRooms() {
+    const publicList = [];
+    for (const [id, roomData] of Object.entries(rooms)) {
+        if (roomData.isPublic) {
+            const occupants = io.sockets.adapter.rooms.get(id);
+            const count = occupants ? occupants.size : 0;
+            if (count > 0) {
+                publicList.push({ roomId: id, count: count });
+            }
+        }
+    }
+    return publicList;
+}
+
+// Helper to admit an approved user into a room
+function admitUserToRoom(targetSocket, roomId, username) {
+    targetSocket.join(roomId);
+    targetSocket.roomId = roomId;
+    targetSocket.username = username;
+
+    const room = rooms[roomId];
+    targetSocket.emit('room_joined', {
+        roomId,
+        username,
+        isPublic: room.isPublic,
+        isHost: room.hostId === targetSocket.id
+    });
+
+    // Send the existing queue to the new joiner
+    targetSocket.emit('update_queue', room.queue);
+
+    targetSocket.to(roomId).emit('chat_message', {
+        sender: 'System',
+        text: `${username} joined the watch party.`
+    });
+
+    io.emit('room_list', getPublicRooms());
+}
 
 io.on('connection', (socket) => {
     console.log(`Connection opened: ${socket.id}`);
 
-    // 1. Handle joining a specific room
-    // --- NEW: Memory Leak Prevention & Disconnect Logic ---
-    socket.on('disconnect', () => {
-        if (!socket.roomId) return; // Ignore users who never joined a room
+    // Send active public rooms on initial load
+    socket.emit('room_list', getPublicRooms());
 
-        // 1. Tell the room they left
-        socket.to(socket.roomId).emit('chat_message', { 
-            sender: 'System', 
-            text: `${socket.username} left the watch party.` 
-        });
-
-        // 2. Check how many people are left in this specific room
-        const roomOccupants = io.sockets.adapter.rooms.get(socket.roomId);
-        
-        // 3. If the room is completely empty, delete it from our server memory
-        if (!roomOccupants || roomOccupants.size === 0) {
-            console.log(`Room ${socket.roomId} is empty. Deleting from memory.`);
-            delete rooms[socket.roomId]; 
+    // 1. CREATE A NEW ROOM
+    socket.on('create_room', ({ roomId, username, isPublic }) => {
+        if (rooms[roomId]) {
+            return socket.emit('room_error', `Room "${roomId}" already exists! Click "Join Room" instead.`);
         }
+
+        rooms[roomId] = {
+            hostId: socket.id,
+            isPublic: Boolean(isPublic),
+            state: 'paused',
+            time: 0,
+            lastUpdate: Date.now(),
+            videoId: '8hP9D6kZseM',
+            queue: [],
+            lastQueuePop: 0
+        };
+
+        admitUserToRoom(socket, roomId, username);
     });
+
+    // 2. JOIN AN EXISTING ROOM
     socket.on('join_room', ({ roomId, username }) => {
-        
-        socket.join(roomId); // Socket.io groups this user into the room
-        
-        // Save the data to this specific user's socket connection
-        socket.roomId = roomId;
-        socket.username = username;
-
-        // If this is the first person in the room, initialize the default state
-        // Inside socket.on('join_room', ...)
-        if (!rooms[roomId]) {
-            rooms[roomId] = { 
-                state: 'paused', time: 0, lastUpdate: Date.now(), videoId: '8hP9D6kZseM', 
-                queue: [], 
-                lastQueuePop: 0 // NEW: A dedicated clock just for the queue lock
-            };
+        const room = rooms[roomId];
+        if (!room) {
+            return socket.emit('room_error', `Room "${roomId}" does not exist! Click "Create Room" first.`);
         }
 
-        // Announce the arrival to everyone ELSE in that room
-        socket.to(roomId).emit('chat_message', { 
-            sender: 'System', 
-            text: `${username} joined the watch party.` 
-        });
+        if (room.isPublic) {
+            admitUserToRoom(socket, roomId, username);
+        } else {
+            // Private Room: Save name temporarily and ask the Host for permission
+            socket.tempUsername = username;
+            socket.emit('waiting_for_host', `Waiting for the room creator to approve your request...`);
+            io.to(room.hostId).emit('knock_request', {
+                requesterId: socket.id,
+                username: username,
+                roomId: roomId
+            });
+        }
     });
 
-    // Add a video to the back of the queue
-    socket.on('add_to_queue', (videoData) => {
-        if (!socket.roomId) return;
-        rooms[socket.roomId].queue.push(videoData);
-        io.to(socket.roomId).emit('update_queue', rooms[socket.roomId].queue);
-    });
-
-    // Handle a video ending
-    socket.on('video_ended', () => {
-        if (!socket.roomId) return;
+    // 3. HOST APPROVES OR DENIES KNOCK REQUEST
+    socket.on('resolve_knock', ({ requesterId, approved }) => {
         const room = rooms[socket.roomId];
-        
-        // Use the dedicated queue timer instead of the general lastUpdate timer
-        if (Date.now() - room.lastQueuePop < 5000) return;
+        if (!room || room.hostId !== socket.id) return;
 
-        if (room.queue.length > 0) {
-            const nextVideo = room.queue.shift(); 
-            room.videoId = nextVideo.videoId;
-            room.time = 0;
-            room.state = 'playing';
-            room.lastUpdate = Date.now(); 
-            room.lastQueuePop = Date.now(); // Reset the specific queue lock
-            
-            io.to(socket.roomId).emit('load_new_video', nextVideo.videoId);
-            io.to(socket.roomId).emit('update_queue', room.queue);
+        const requesterSocket = io.sockets.sockets.get(requesterId);
+        if (!requesterSocket) return;
+
+        if (approved) {
+            admitUserToRoom(requesterSocket, socket.roomId, requesterSocket.tempUsername);
+        } else {
+            requesterSocket.emit('room_error', 'The room host declined your request to join.');
         }
     });
 
-    // 2. Sync requests now pull from the user's specific room
+    // 4. VIDEO SYNCING
     socket.on('request_sync', () => {
         const room = rooms[socket.roomId];
         if (!room) return;
@@ -113,34 +131,19 @@ io.on('connection', (socket) => {
         socket.emit('initial_state', { state: room.state, time: currentVideoTime, videoId: room.videoId });
     });
 
-    // 3. Broadcasts now use `socket.to(socket.roomId)` instead of `socket.broadcast`
     socket.on('play_video', (time) => {
-        if (!socket.roomId) return;
+        if (!socket.roomId || !rooms[socket.roomId]) return;
         rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'playing', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_play', time);
     });
 
     socket.on('pause_video', (time) => {
-        if (!socket.roomId) return;
+        if (!socket.roomId || !rooms[socket.roomId]) return;
         rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'paused', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_pause', time);
     });
 
-    socket.on('change_video', (newVideoId) => {
-        if (!socket.roomId) return;
-        rooms[socket.roomId] = { state: 'playing', time: 0, lastUpdate: Date.now(), videoId: newVideoId };
-        
-        // io.to() sends to EVERYONE in the room, including the sender
-        io.to(socket.roomId).emit('load_new_video', newVideoId);
-    });
-
-    // 4. Chat now uses the custom username
-    socket.on('chat_message', (text) => {
-        if (!socket.roomId) return;
-        io.to(socket.roomId).emit('chat_message', { sender: socket.username, text: text });
-    });
-
-    // Handle search (unchanged, just added here for completeness)
+    // 5. YOUTUBE SEARCH & QUEUE
     socket.on('search_youtube', async (query) => {
         try {
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
@@ -150,6 +153,64 @@ io.on('connection', (socket) => {
         } catch (error) {
             console.error("YouTube API Error:", error);
         }
+    });
+
+    socket.on('add_to_queue', (videoData) => {
+        if (!socket.roomId || !rooms[socket.roomId]) return;
+        rooms[socket.roomId].queue.push(videoData);
+        io.to(socket.roomId).emit('update_queue', rooms[socket.roomId].queue);
+    });
+
+    socket.on('video_ended', () => {
+        if (!socket.roomId || !rooms[socket.roomId]) return;
+        const room = rooms[socket.roomId];
+
+        if (Date.now() - room.lastQueuePop < 5000) return;
+
+        if (room.queue.length > 0) {
+            const nextVideo = room.queue.shift();
+            room.videoId = nextVideo.videoId;
+            room.time = 0;
+            room.state = 'playing';
+            room.lastUpdate = Date.now();
+            room.lastQueuePop = Date.now();
+
+            io.to(socket.roomId).emit('load_new_video', nextVideo.videoId);
+            io.to(socket.roomId).emit('update_queue', room.queue);
+        }
+    });
+
+    // 6. LIVE CHAT
+    socket.on('chat_message', (text) => {
+        if (!socket.roomId) return;
+        io.to(socket.roomId).emit('chat_message', { sender: socket.username, text: text });
+    });
+
+    // 7. DISCONNECT & CLEANUP
+    socket.on('disconnect', () => {
+        if (!socket.roomId) return;
+
+        socket.to(socket.roomId).emit('chat_message', {
+            sender: 'System',
+            text: `${socket.username} left the watch party.`
+        });
+
+        const roomOccupants = io.sockets.adapter.rooms.get(socket.roomId);
+
+        if (!roomOccupants || roomOccupants.size === 0) {
+            console.log(`Room ${socket.roomId} is empty. Deleting from memory.`);
+            delete rooms[socket.roomId];
+        } else if (rooms[socket.roomId] && rooms[socket.roomId].hostId === socket.id) {
+            // Transfer Host to the next remaining user
+            const nextHostId = roomOccupants.values().next().value;
+            rooms[socket.roomId].hostId = nextHostId;
+            io.to(nextHostId).emit('chat_message', {
+                sender: 'System',
+                text: 'You are now the room Host.'
+            });
+        }
+
+        io.emit('room_list', getPublicRooms());
     });
 });
 
