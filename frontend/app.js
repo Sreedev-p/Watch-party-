@@ -5,10 +5,23 @@ let isSyncing = false;
 let syncFailsafe;
 let debounceTimer;
 
+let isHost = false;
+let hostOnly = false;
+let captionsEnabled = false;
+let currentRoomInfo = { roomId: '', username: '', isPublic: false };
+
 function blockEcho() {
     isSyncing = true;
     clearTimeout(syncFailsafe);
     syncFailsafe = setTimeout(() => { isSyncing = false; }, 1000);
+}
+
+function canControlPlayback() {
+    if (hostOnly && !isHost) {
+        alert("🔒 The Host has locked the video controls.");
+        return false;
+    }
+    return true;
 }
 
 // ==========================================
@@ -23,7 +36,10 @@ window.onYouTubeIframeAPIReady = function() {
             'controls': 0,
             'disablekb': 1,
             'rel': 0,
-            'modestbranding': 1
+            'modestbranding': 1,
+            'iv_load_policy': 3,
+            'fs': 0,
+            'cc_load_policy': 0
         },
         events: {
             'onReady': onPlayerReady,
@@ -40,7 +56,6 @@ function onPlayerReady() {
 function onPlayerStateChange(event) {
     if (event.data === 1 || event.data === 2) updatePlayPauseUI(event.data);
 
-    // Trigger next video in queue when current ends (WP-105)
     if (event.data === 0) {
         socket.emit('video_ended');
         return;
@@ -55,7 +70,7 @@ function onPlayerStateChange(event) {
 }
 
 // ==========================================
-// 2. CUSTOM PLAYER CONTROLS
+// 2. CUSTOM PLAYER CONTROLS & KEYBOARD SHORTCUTS (WP-108)
 // ==========================================
 function formatTime(seconds) {
     const min = Math.floor(seconds / 60);
@@ -78,7 +93,8 @@ function updateProgressBar() {
     }
 }
 
-document.getElementById('btn-play-pause').addEventListener('click', () => {
+function togglePlayPause() {
+    if (!player || !canControlPlayback()) return;
     const state = player.getPlayerState();
     const currentTime = player.getCurrentTime();
     if (state === 1) {
@@ -88,16 +104,19 @@ document.getElementById('btn-play-pause').addEventListener('click', () => {
         player.playVideo();
         socket.emit('play_video', currentTime);
     }
-});
+}
 
-document.getElementById('seek-bar').addEventListener('input', (e) => {
-    const duration = player.getDuration();
-    const seekToTime = (e.target.value / 100) * duration;
-    player.seekTo(seekToTime, true);
-    socket.emit('play_video', seekToTime);
-});
+function seekRelative(deltaSeconds) {
+    if (!player || !canControlPlayback()) return;
+    const duration = player.getDuration() || 0;
+    const current = player.getCurrentTime() || 0;
+    const targetTime = Math.max(0, Math.min(duration, current + deltaSeconds));
+    player.seekTo(targetTime, true);
+    socket.emit('play_video', targetTime);
+}
 
-document.getElementById('btn-mute').addEventListener('click', () => {
+function toggleMute() {
+    if (!player) return;
     if (player.isMuted()) {
         player.unMute();
         document.getElementById('btn-mute').innerText = '🔊';
@@ -107,21 +126,112 @@ document.getElementById('btn-mute').addEventListener('click', () => {
         document.getElementById('btn-mute').innerText = '🔇';
         document.getElementById('volume-slider').value = 0;
     }
+}
+
+function changeVolume(delta) {
+    if (!player) return;
+    const currentVol = player.isMuted() ? 0 : player.getVolume();
+    const newVol = Math.max(0, Math.min(100, currentVol + delta));
+    player.setVolume(newVol);
+    document.getElementById('volume-slider').value = newVol;
+
+    if (newVol > 0 && player.isMuted()) {
+        player.unMute();
+        document.getElementById('btn-mute').innerText = '🔊';
+    } else if (newVol === 0) {
+        player.mute();
+        document.getElementById('btn-mute').innerText = '🔇';
+    }
+}
+
+function toggleCaptions() {
+    if (!player) return;
+    captionsEnabled = !captionsEnabled;
+    const ccBtn = document.getElementById('btn-captions');
+
+    if (captionsEnabled) {
+        player.loadModule('captions');
+        player.setOption('captions', 'track', { 'languageCode': 'en' });
+        ccBtn.classList.add('cc-active');
+    } else {
+        player.unloadModule('captions');
+        ccBtn.classList.remove('cc-active');
+    }
+}
+
+document.getElementById('btn-play-pause').addEventListener('click', togglePlayPause);
+document.getElementById('player-shield').addEventListener('click', togglePlayPause);
+document.getElementById('btn-mute').addEventListener('click', toggleMute);
+document.getElementById('btn-captions').addEventListener('click', toggleCaptions);
+
+document.getElementById('btn-skip').addEventListener('click', () => {
+    if (!canControlPlayback()) return;
+    socket.emit('skip_video');
+});
+
+document.getElementById('btn-host-lock').addEventListener('click', () => {
+    if (!isHost) return;
+    socket.emit('toggle_host_lock');
+});
+
+document.getElementById('seek-bar').addEventListener('input', (e) => {
+    if (!canControlPlayback()) return;
+    const duration = player.getDuration();
+    const seekToTime = (e.target.value / 100) * duration;
+    player.seekTo(seekToTime, true);
+    socket.emit('play_video', seekToTime);
 });
 
 document.getElementById('volume-slider').addEventListener('input', (e) => {
-    const vol = e.target.value;
+    const vol = Number(e.target.value);
     player.setVolume(vol);
     if (vol > 0 && player.isMuted()) {
         player.unMute();
         document.getElementById('btn-mute').innerText = '🔊';
-    } else if (vol == 0) {
+    } else if (vol === 0) {
         document.getElementById('btn-mute').innerText = '🔇';
     }
 });
 
+window.addEventListener('keydown', (e) => {
+    const loginVisible = document.getElementById('login-overlay').style.display !== 'none';
+    const isTyping = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    if (loginVisible || isTyping) return;
+
+    switch (e.code) {
+        case 'Space':
+            e.preventDefault();
+            togglePlayPause();
+            break;
+        case 'ArrowRight':
+            e.preventDefault();
+            seekRelative(5);
+            break;
+        case 'ArrowLeft':
+            e.preventDefault();
+            seekRelative(-5);
+            break;
+        case 'ArrowUp':
+            e.preventDefault();
+            changeVolume(10);
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            changeVolume(-10);
+            break;
+        case 'KeyM':
+            e.preventDefault();
+            toggleMute();
+            break;
+        case 'KeyC':
+            e.preventDefault();
+            toggleCaptions();
+            break;
+    }
+});
+
 // ==========================================
-// 3. ROOM, LOBBY & KNOCK LOGIC (WP-104 & WP-106)
+// 3. ROOM, LOBBY, KNOCK & RBAC LOGIC (WP-104, WP-106, WP-108)
 // ==========================================
 const loginAlert = document.getElementById('login-alert');
 
@@ -130,6 +240,18 @@ function showLoginAlert(msg, isError = true) {
     loginAlert.style.background = isError ? '#5a1d1d' : '#1d4d5a';
     loginAlert.style.color = '#fff';
     loginAlert.textContent = msg;
+}
+
+function updateStatusBanner() {
+    const { roomId, username, isPublic } = currentRoomInfo;
+    const lockText = hostOnly ? '🔒 Host-Only Controls' : '🔓 Collaborative Controls';
+    document.getElementById('status').innerText = 
+        `Room: ${roomId} (${isPublic ? 'Public' : 'Private'}) | ${lockText} | User: ${username} ${isHost ? '👑 (Host)' : ''}`;
+    
+    const lockBtn = document.getElementById('btn-host-lock');
+    lockBtn.style.display = isHost ? 'inline-block' : 'none';
+    lockBtn.innerText = hostOnly ? '🔒' : '🔓';
+    lockBtn.style.background = hostOnly ? '#e50914' : '#444';
 }
 
 function getCredentials() {
@@ -142,7 +264,6 @@ function getCredentials() {
     return { username, roomId };
 }
 
-// Button 1: Create Room
 document.getElementById('btn-create-room').addEventListener('click', () => {
     const creds = getCredentials();
     if (!creds) return;
@@ -150,22 +271,22 @@ document.getElementById('btn-create-room').addEventListener('click', () => {
     socket.emit('create_room', { ...creds, isPublic });
 });
 
-// Button 2: Join Existing Room
 document.getElementById('btn-join-room').addEventListener('click', () => {
     const creds = getCredentials();
     if (!creds) return;
     socket.emit('join_room', creds);
 });
 
-// Server Errors & Waiting States
 socket.on('room_error', (msg) => showLoginAlert(msg, true));
 socket.on('waiting_for_host', (msg) => showLoginAlert(msg, false));
 
-// Successfully Admitted to Room
-socket.on('room_joined', ({ roomId, username, isPublic, isHost }) => {
+socket.on('room_joined', (data) => {
+    currentRoomInfo = { roomId: data.roomId, username: data.username, isPublic: data.isPublic };
+    isHost = data.isHost;
+    hostOnly = data.hostOnly;
+
     document.getElementById('login-overlay').style.display = 'none';
-    document.getElementById('status').innerText = 
-        `Room: ${roomId} (${isPublic ? 'Public' : 'Private'}) | User: ${username} ${isHost ? '👑 (Host)' : ''}`;
+    updateStatusBanner();
 
     if (player && typeof player.unMute === 'function') {
         player.unMute();
@@ -175,7 +296,16 @@ socket.on('room_joined', ({ roomId, username, isPublic, isHost }) => {
     }
 });
 
-// Host receives a Knock Request from someone trying to join Private Room
+socket.on('host_lock_updated', (lockedState) => {
+    hostOnly = lockedState;
+    updateStatusBanner();
+});
+
+socket.on('promoted_to_host', () => {
+    isHost = true;
+    updateStatusBanner();
+});
+
 socket.on('knock_request', ({ requesterId, username }) => {
     const container = document.getElementById('knock-container');
     const banner = document.createElement('div');
@@ -214,7 +344,6 @@ socket.on('knock_request', ({ requesterId, username }) => {
     container.appendChild(banner);
 });
 
-// Render Active Public Rooms
 socket.on('room_list', (publicRooms) => {
     const listContainer = document.getElementById('public-rooms-list');
     listContainer.innerHTML = '';
