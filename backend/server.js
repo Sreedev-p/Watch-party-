@@ -42,7 +42,8 @@ function admitUserToRoom(targetSocket, roomId, username) {
         roomId,
         username,
         isPublic: room.isPublic,
-        isHost: room.hostId === targetSocket.id
+        isHost: room.hostId === targetSocket.id,
+        hostOnly: room.hostOnly
     });
 
     // Send the existing queue to the new joiner
@@ -71,6 +72,7 @@ io.on('connection', (socket) => {
         rooms[roomId] = {
             hostId: socket.id,
             isPublic: Boolean(isPublic),
+            hostOnly: false,
             state: 'paused',
             time: 0,
             lastUpdate: Date.now(),
@@ -119,6 +121,7 @@ io.on('connection', (socket) => {
     });
 
     // 4. VIDEO SYNCING
+    // 4. VIDEO SYNCING & HOST RBAC (WP-108)
     socket.on('request_sync', () => {
         const room = rooms[socket.roomId];
         if (!room) return;
@@ -131,16 +134,58 @@ io.on('connection', (socket) => {
         socket.emit('initial_state', { state: room.state, time: currentVideoTime, videoId: room.videoId });
     });
 
+    socket.on('toggle_host_lock', () => {
+        const room = rooms[socket.roomId];
+        if (!room || room.hostId !== socket.id) return;
+
+        room.hostOnly = !room.hostOnly;
+        io.to(socket.roomId).emit('host_lock_updated', room.hostOnly);
+        io.to(socket.roomId).emit('chat_message', {
+            sender: 'System',
+            text: room.hostOnly 
+                ? '🔒 Host locked the player controls (Host-only mode).' 
+                : '🔓 Host unlocked the player controls (Everyone can control).'
+        });
+    });
+
     socket.on('play_video', (time) => {
-        if (!socket.roomId || !rooms[socket.roomId]) return;
-        rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'playing', time: time, lastUpdate: Date.now() };
+        const room = rooms[socket.roomId];
+        if (!room) return;
+        if (room.hostOnly && room.hostId !== socket.id) return;
+
+        rooms[socket.roomId] = { ...room, state: 'playing', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_play', time);
     });
 
     socket.on('pause_video', (time) => {
-        if (!socket.roomId || !rooms[socket.roomId]) return;
-        rooms[socket.roomId] = { ...rooms[socket.roomId], state: 'paused', time: time, lastUpdate: Date.now() };
+        const room = rooms[socket.roomId];
+        if (!room) return;
+        if (room.hostOnly && room.hostId !== socket.id) return;
+
+        rooms[socket.roomId] = { ...room, state: 'paused', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_pause', time);
+    });
+
+    socket.on('skip_video', () => {
+        const room = rooms[socket.roomId];
+        if (!room) return;
+        if (room.hostOnly && room.hostId !== socket.id) return;
+
+        if (room.queue.length > 0) {
+            const nextVideo = room.queue.shift();
+            room.videoId = nextVideo.videoId;
+            room.time = 0;
+            room.state = 'playing';
+            room.lastUpdate = Date.now();
+            room.lastQueuePop = Date.now();
+
+            io.to(socket.roomId).emit('load_new_video', nextVideo.videoId);
+            io.to(socket.roomId).emit('update_queue', room.queue);
+            io.to(socket.roomId).emit('chat_message', {
+                sender: 'System',
+                text: `⏭ ${socket.username} skipped to: ${nextVideo.title}`
+            });
+        }
     });
 
     // 5. YOUTUBE SEARCH & QUEUE
@@ -224,6 +269,7 @@ io.on('connection', (socket) => {
             // Transfer Host to the next remaining user
             const nextHostId = roomOccupants.values().next().value;
             rooms[socket.roomId].hostId = nextHostId;
+            io.to(nextHostId).emit('promoted_to_host');
             io.to(nextHostId).emit('chat_message', {
                 sender: 'System',
                 text: 'You are now the room Host.'
