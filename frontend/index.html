@@ -84,19 +84,26 @@
                     <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">🔇</button>
                     <input type="range" id="volume-slider" value="0" min="0" max="100" title="Volume (Up/Down Arrows)">
                 </div>
-                <button id="btn-host-lock" class="icon-btn" style="display: none; background: #444;" title="Lock controls to Host only">🔓</button>
             </div>
             <div id="shortcut-hint">
                 Shortcuts: <b>Space</b> Play/Pause | <b>←/→</b> Seek 5s | <b>↑/↓</b> Volume | <b>M</b> Mute | <b>C</b> Captions
             </div>
         </div>
         <!-- Live Chat Sidebar (WP-103) -->
+        <!-- Live Chat Sidebar (WP-103) -->
         <div id="chat-container">
+            <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #ccc;">💬 Live Chat</h4>
             <div id="chat-messages"></div>
             <div id="chat-input-container">
                 <input type="text" id="chat-input" placeholder="Type a message...">
                 <button id="btn-send-chat" class="control-btn">Send</button>
             </div>
+        </div>
+
+        <!-- Live Room Roster & RBAC Panel (WP-109) -->
+        <div id="roster-container">
+            <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #ccc;">👥 Room Members (<span id="roster-count">0</span>)</h4>
+            <div id="roster-list"></div>
         </div>
     </div>
 

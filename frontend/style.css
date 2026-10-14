@@ -21,9 +21,10 @@ body {
 
 #main-layout {
     display: flex;
-    gap: 20px;
-    max-width: 1000px;
+    gap: 15px;
+    max-width: 1280px;
     margin-top: 10px;
+    align-items: flex-start;
 }
 
 /* Login Overlay & Public Lobby (WP-104 & WP-106) */
@@ -373,3 +374,74 @@ body {
     background: #e50914 !important;
     font-weight: bold;
 }
+
+/* Room Roster & RBAC Controls (WP-109) */
+#roster-container {
+    width: 280px;
+    background: #1e1e1e;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    padding: 15px;
+    height: 415px;
+    box-sizing: border-box;
+}
+
+#roster-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.roster-item {
+    background: #2a2a2a;
+    padding: 10px;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.roster-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.role-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.role-owner { background: #d4af37; color: #000; }
+.role-admin { background: #e50914; color: #fff; }
+.role-curator { background: #1db954; color: #fff; }
+.role-member { background: #555; color: #ddd; }
+
+.mod-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    border-top: 1px solid #3a3a3a;
+    padding-top: 6px;
+}
+
+.mod-btn, .mod-select {
+    background: #3a3a3a;
+    color: #eee;
+    border: none;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.mod-btn:hover { background: #555; }
+.mod-btn.danger { background: #5a1d1d; }
+.mod-btn.danger:hover { background: #7a2020; }

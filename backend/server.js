@@ -10,19 +10,31 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
-// Serve the modular frontend folder
 app.use(express.static(path.join(__dirname, '../frontend')));
+
+// 4-Tier RBAC Privilege Hierarchy
+const ROLES = {
+    MEMBER: 'member',   // Level 1: Watch, chat, join call
+    CURATOR: 'curator', // Level 2: + Add videos to queue
+    ADMIN: 'admin',     // Level 3: + Play/Pause/Seek/Skip, moderate lower ranks
+    OWNER: 'owner'      // Level 4: Absolute control over everyone
+};
+
+const ROLE_LEVEL = {
+    'member': 1,
+    'curator': 2,
+    'admin': 3,
+    'owner': 4
+};
 
 // In-Memory Room Dictionary
 const rooms = {};
 
-// Helper to compile a list of active public rooms for the lobby
 function getPublicRooms() {
     const publicList = [];
     for (const [id, roomData] of Object.entries(rooms)) {
         if (roomData.isPublic) {
-            const occupants = io.sockets.adapter.rooms.get(id);
-            const count = occupants ? occupants.size : 0;
+            const count = Object.keys(roomData.users).length;
             if (count > 0) {
                 publicList.push({ roomId: id, count: count });
             }
@@ -31,27 +43,44 @@ function getPublicRooms() {
     return publicList;
 }
 
-// Helper to admit an approved user into a room
-function admitUserToRoom(targetSocket, roomId, username) {
+// Broadcast the full member list and their roles/restrictions to everyone in the room
+function broadcastRoster(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    io.to(roomId).emit('update_roster', Object.values(room.users));
+}
+
+function admitUserToRoom(targetSocket, roomId, username, assignedRole = ROLES.MEMBER) {
+    const room = rooms[roomId];
+    if (!room) return;
+
     targetSocket.join(roomId);
     targetSocket.roomId = roomId;
     targetSocket.username = username;
 
-    const room = rooms[roomId];
+    // Register user in the room's RBAC state
+    room.users[targetSocket.id] = {
+        id: targetSocket.id,
+        username: username,
+        role: assignedRole,
+        chatRestricted: false,
+        callMuted: false,
+        inCall: false
+    };
+
     targetSocket.emit('room_joined', {
         roomId,
         username,
         isPublic: room.isPublic,
-        isHost: room.hostId === targetSocket.id,
-        hostOnly: room.hostOnly
+        role: assignedRole
     });
 
-    // Send the existing queue to the new joiner
     targetSocket.emit('update_queue', room.queue);
+    broadcastRoster(roomId);
 
     targetSocket.to(roomId).emit('chat_message', {
         sender: 'System',
-        text: `${username} joined the watch party.`
+        text: `${username} joined the room as ${assignedRole.toUpperCase()}.`
     });
 
     io.emit('room_list', getPublicRooms());
@@ -60,31 +89,30 @@ function admitUserToRoom(targetSocket, roomId, username) {
 io.on('connection', (socket) => {
     console.log(`Connection opened: ${socket.id}`);
 
-    // Send active public rooms on initial load
     socket.emit('room_list', getPublicRooms());
 
-    // 1. CREATE A NEW ROOM
+    // 1. CREATE A NEW ROOM (Creator becomes OWNER)
     socket.on('create_room', ({ roomId, username, isPublic }) => {
         if (rooms[roomId]) {
             return socket.emit('room_error', `Room "${roomId}" already exists! Click "Join Room" instead.`);
         }
 
         rooms[roomId] = {
-            hostId: socket.id,
+            ownerId: socket.id,
             isPublic: Boolean(isPublic),
-            hostOnly: false,
             state: 'paused',
             time: 0,
             lastUpdate: Date.now(),
             videoId: '8hP9D6kZseM',
             queue: [],
-            lastQueuePop: 0
+            lastQueuePop: 0,
+            users: {} // Maps socket.id -> User RBAC Object
         };
 
-        admitUserToRoom(socket, roomId, username);
+        admitUserToRoom(socket, roomId, username, ROLES.OWNER);
     });
 
-    // 2. JOIN AN EXISTING ROOM
+    // 2. JOIN AN EXISTING ROOM (Default rank: MEMBER)
     socket.on('join_room', ({ roomId, username }) => {
         const room = rooms[roomId];
         if (!room) {
@@ -92,12 +120,11 @@ io.on('connection', (socket) => {
         }
 
         if (room.isPublic) {
-            admitUserToRoom(socket, roomId, username);
+            admitUserToRoom(socket, roomId, username, ROLES.MEMBER);
         } else {
-            // Private Room: Save name temporarily and ask the Host for permission
             socket.tempUsername = username;
-            socket.emit('waiting_for_host', `Waiting for the room creator to approve your request...`);
-            io.to(room.hostId).emit('knock_request', {
+            socket.emit('waiting_for_host', `Waiting for the room Owner to approve your request...`);
+            io.to(room.ownerId).emit('knock_request', {
                 requesterId: socket.id,
                 username: username,
                 roomId: roomId
@@ -105,23 +132,112 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. HOST APPROVES OR DENIES KNOCK REQUEST
+    // 3. OWNER APPROVES OR DENIES PRIVATE KNOCK REQUEST
     socket.on('resolve_knock', ({ requesterId, approved }) => {
         const room = rooms[socket.roomId];
-        if (!room || room.hostId !== socket.id) return;
+        if (!room || room.ownerId !== socket.id) return;
 
         const requesterSocket = io.sockets.sockets.get(requesterId);
         if (!requesterSocket) return;
 
         if (approved) {
-            admitUserToRoom(requesterSocket, socket.roomId, requesterSocket.tempUsername);
+            admitUserToRoom(requesterSocket, socket.roomId, requesterSocket.tempUsername, ROLES.MEMBER);
         } else {
-            requesterSocket.emit('room_error', 'The room host declined your request to join.');
+            requesterSocket.emit('room_error', 'The room Owner declined your request to join.');
         }
     });
 
-    // 4. VIDEO SYNCING
-    // 4. VIDEO SYNCING & HOST RBAC (WP-108)
+    // 4. HIERARCHICAL RBAC MODERATION ACTIONS (WP-109)
+    socket.on('moderate_user', ({ targetId, action, newRole }) => {
+        const room = rooms[socket.roomId];
+        if (!room) return;
+
+        const actor = room.users[socket.id];
+        const target = room.users[targetId];
+        if (!actor || !target || socket.id === targetId) return;
+
+        const actorLevel = ROLE_LEVEL[actor.role];
+        const targetLevel = ROLE_LEVEL[target.role];
+
+        // Rule: Must be at least Admin (3), and must strictly outrank the target user!
+        if (actorLevel < ROLE_LEVEL.ADMIN || actorLevel <= targetLevel) return;
+
+        const targetSocket = io.sockets.sockets.get(targetId);
+
+        switch (action) {
+            case 'set_role':
+                // Only Owner (4) can promote someone to Admin (3). Admins (3) can only set Member (1) or Curator (2).
+                if (!ROLE_LEVEL[newRole] || newRole === ROLES.OWNER) return;
+                if (actorLevel === ROLE_LEVEL.ADMIN && ROLE_LEVEL[newRole] >= ROLE_LEVEL.ADMIN) return;
+
+                target.role = newRole;
+                if (targetSocket) targetSocket.emit('role_updated', newRole);
+                io.to(socket.roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: `🎖️ ${actor.username} changed ${target.username}'s role to ${newRole.toUpperCase()}.`
+                });
+                break;
+
+            case 'toggle_chat':
+                target.chatRestricted = !target.chatRestricted;
+                if (targetSocket) targetSocket.emit('chat_restriction_updated', target.chatRestricted);
+                io.to(socket.roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: target.chatRestricted
+                        ? `🔇 ${actor.username} restricted ${target.username} from chatting.`
+                        : `🔊 ${actor.username} restored ${target.username}'s chat privileges.`
+                });
+                break;
+
+            case 'toggle_call_mute':
+                target.callMuted = !target.callMuted;
+                if (targetSocket) targetSocket.emit('force_mute_status', target.callMuted);
+                io.to(socket.roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: target.callMuted
+                        ? `🎙️❌ ${actor.username} server-muted ${target.username} in the call.`
+                        : `🎙️✅ ${actor.username} unmuted ${target.username} in the call.`
+                });
+                break;
+
+            case 'remove_from_call':
+                target.inCall = false;
+                if (targetSocket) {
+                    if (targetSocket.peerId) {
+                        io.to(socket.roomId).emit('user_left_video', targetSocket.peerId);
+                        targetSocket.peerId = null;
+                    }
+                    targetSocket.emit('force_leave_call');
+                }
+                io.to(socket.roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: `📷❌ ${actor.username} removed ${target.username} from the video call.`
+                });
+                break;
+
+            case 'kick_from_room':
+                if (targetSocket) {
+                    if (targetSocket.peerId) {
+                        io.to(socket.roomId).emit('user_left_video', targetSocket.peerId);
+                        targetSocket.peerId = null;
+                    }
+                    targetSocket.leave(socket.roomId);
+                    targetSocket.roomId = null;
+                    targetSocket.emit('kicked_from_room', `You were removed from the room by ${actor.username}.`);
+                }
+                delete room.users[targetId];
+                io.to(socket.roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: `👢 ${actor.username} kicked ${target.username} from the room.`
+                });
+                io.emit('room_list', getPublicRooms());
+                break;
+        }
+
+        broadcastRoster(socket.roomId);
+    });
+
+    // 5. VIDEO SYNCING (Requires ADMIN [3] or OWNER [4])
     socket.on('request_sync', () => {
         const room = rooms[socket.roomId];
         if (!room) return;
@@ -134,24 +250,10 @@ io.on('connection', (socket) => {
         socket.emit('initial_state', { state: room.state, time: currentVideoTime, videoId: room.videoId });
     });
 
-    socket.on('toggle_host_lock', () => {
-        const room = rooms[socket.roomId];
-        if (!room || room.hostId !== socket.id) return;
-
-        room.hostOnly = !room.hostOnly;
-        io.to(socket.roomId).emit('host_lock_updated', room.hostOnly);
-        io.to(socket.roomId).emit('chat_message', {
-            sender: 'System',
-            text: room.hostOnly 
-                ? '🔒 Host locked the player controls (Host-only mode).' 
-                : '🔓 Host unlocked the player controls (Everyone can control).'
-        });
-    });
-
     socket.on('play_video', (time) => {
         const room = rooms[socket.roomId];
-        if (!room) return;
-        if (room.hostOnly && room.hostId !== socket.id) return;
+        const user = room?.users[socket.id];
+        if (!room || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
         rooms[socket.roomId] = { ...room, state: 'playing', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_play', time);
@@ -159,8 +261,8 @@ io.on('connection', (socket) => {
 
     socket.on('pause_video', (time) => {
         const room = rooms[socket.roomId];
-        if (!room) return;
-        if (room.hostOnly && room.hostId !== socket.id) return;
+        const user = room?.users[socket.id];
+        if (!room || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
         rooms[socket.roomId] = { ...room, state: 'paused', time: time, lastUpdate: Date.now() };
         socket.to(socket.roomId).emit('sync_pause', time);
@@ -168,8 +270,8 @@ io.on('connection', (socket) => {
 
     socket.on('skip_video', () => {
         const room = rooms[socket.roomId];
-        if (!room) return;
-        if (room.hostOnly && room.hostId !== socket.id) return;
+        const user = room?.users[socket.id];
+        if (!room || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
         if (room.queue.length > 0) {
             const nextVideo = room.queue.shift();
@@ -183,13 +285,17 @@ io.on('connection', (socket) => {
             io.to(socket.roomId).emit('update_queue', room.queue);
             io.to(socket.roomId).emit('chat_message', {
                 sender: 'System',
-                text: `⏭ ${socket.username} skipped to: ${nextVideo.title}`
+                text: `⏭ ${user.username} skipped to: ${nextVideo.title}`
             });
         }
     });
 
-    // 5. YOUTUBE SEARCH & QUEUE
+    // 6. YOUTUBE SEARCH & QUEUE (Requires CURATOR [2], ADMIN [3], or OWNER [4])
     socket.on('search_youtube', async (query) => {
+        const room = rooms[socket.roomId];
+        const user = room?.users[socket.id];
+        if (!room || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.CURATOR) return;
+
         try {
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
             const response = await fetch(url);
@@ -201,9 +307,16 @@ io.on('connection', (socket) => {
     });
 
     socket.on('add_to_queue', (videoData) => {
-        if (!socket.roomId || !rooms[socket.roomId]) return;
-        rooms[socket.roomId].queue.push(videoData);
-        io.to(socket.roomId).emit('update_queue', rooms[socket.roomId].queue);
+        const room = rooms[socket.roomId];
+        const user = room?.users[socket.id];
+        if (!room || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.CURATOR) return;
+
+        room.queue.push(videoData);
+        io.to(socket.roomId).emit('update_queue', room.queue);
+        io.to(socket.roomId).emit('chat_message', {
+            sender: 'System',
+            text: `🎵 ${user.username} added "${videoData.title}" to the queue.`
+        });
     });
 
     socket.on('video_ended', () => {
@@ -225,55 +338,86 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. LIVE CHAT
+    // 7. LIVE CHAT (Checks if user is chatRestricted)
     socket.on('chat_message', (text) => {
-        if (!socket.roomId) return;
-        io.to(socket.roomId).emit('chat_message', { sender: socket.username, text: text });
+        const room = rooms[socket.roomId];
+        const user = room?.users[socket.id];
+        if (!room || !user || user.chatRestricted) return;
+
+        io.to(socket.roomId).emit('chat_message', { sender: user.username, text: text });
     });
 
-    // 6.5 WEBRTC VIDEO CALL SIGNALING (WP-107)
+    // 8. WEBRTC VIDEO CALL SIGNALING
     socket.on('join_video_call', (peerId) => {
-        if (!socket.roomId) return;
+        const room = rooms[socket.roomId];
+        const user = room?.users[socket.id];
+        if (!room || !user) return;
+
         socket.peerId = peerId;
-        // Tell everyone else in the room to connect their webcam stream to this Peer ID
+        user.inCall = true;
+        broadcastRoster(socket.roomId);
+
+        // Enforce server-mute immediately if they were already muted by an Admin
+        if (user.callMuted) {
+            socket.emit('force_mute_status', true);
+        }
+
         socket.to(socket.roomId).emit('user_joined_video', {
             peerId: peerId,
-            username: socket.username
+            username: user.username
         });
     });
 
     socket.on('leave_video_call', () => {
-        if (!socket.roomId || !socket.peerId) return;
+        const room = rooms[socket.roomId];
+        const user = room?.users[socket.id];
+        if (!room || !socket.peerId) return;
+
+        if (user) user.inCall = false;
         socket.to(socket.roomId).emit('user_left_video', socket.peerId);
         socket.peerId = null;
+        broadcastRoster(socket.roomId);
     });
-    // 7. DISCONNECT & CLEANUP
+
+    // 9. DISCONNECT & PRIORITY OWNER SUCCESSION (Owner -> Admin -> Curator -> Member)
     socket.on('disconnect', () => {
-        if (!socket.roomId) return;
+        const roomId = socket.roomId;
+        if (!roomId || !rooms[roomId]) return;
+
+        const room = rooms[roomId];
+        const departingUser = room.users[socket.id];
 
         if (socket.peerId) {
-            socket.to(socket.roomId).emit('user_left_video', socket.peerId);
+            socket.to(roomId).emit('user_left_video', socket.peerId);
         }
-        
-        socket.to(socket.roomId).emit('chat_message', {
+
+        delete room.users[socket.id];
+
+        socket.to(roomId).emit('chat_message', {
             sender: 'System',
             text: `${socket.username} left the watch party.`
         });
 
-        const roomOccupants = io.sockets.adapter.rooms.get(socket.roomId);
+        const remainingUsers = Object.values(room.users);
 
-        if (!roomOccupants || roomOccupants.size === 0) {
-            console.log(`Room ${socket.roomId} is empty. Deleting from memory.`);
-            delete rooms[socket.roomId];
-        } else if (rooms[socket.roomId] && rooms[socket.roomId].hostId === socket.id) {
-            // Transfer Host to the next remaining user
-            const nextHostId = roomOccupants.values().next().value;
-            rooms[socket.roomId].hostId = nextHostId;
-            io.to(nextHostId).emit('promoted_to_host');
-            io.to(nextHostId).emit('chat_message', {
-                sender: 'System',
-                text: 'You are now the room Host.'
-            });
+        if (remainingUsers.length === 0) {
+            console.log(`Room ${roomId} is empty. Deleting from memory.`);
+            delete rooms[roomId];
+        } else {
+            // If the Owner left, pick the highest ranking member (Admin > Curator > Member)
+            if (room.ownerId === socket.id) {
+                remainingUsers.sort((a, b) => ROLE_LEVEL[b.role] - ROLE_LEVEL[a.role]);
+                const newOwner = remainingUsers[0];
+                newOwner.role = ROLES.OWNER;
+                room.ownerId = newOwner.id;
+
+                io.to(newOwner.id).emit('role_updated', ROLES.OWNER);
+                io.to(roomId).emit('chat_message', {
+                    sender: 'System',
+                    text: `👑 ${newOwner.username} succeeded as the new Room Owner!`
+                });
+            }
+            broadcastRoster(roomId);
         }
 
         io.emit('room_list', getPublicRooms());
