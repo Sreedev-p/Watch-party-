@@ -186,10 +186,30 @@ io.on('connection', (socket) => {
         io.to(socket.roomId).emit('chat_message', { sender: socket.username, text: text });
     });
 
+    // 6.5 WEBRTC VIDEO CALL SIGNALING (WP-107)
+    socket.on('join_video_call', (peerId) => {
+        if (!socket.roomId) return;
+        socket.peerId = peerId;
+        // Tell everyone else in the room to connect their webcam stream to this Peer ID
+        socket.to(socket.roomId).emit('user_joined_video', {
+            peerId: peerId,
+            username: socket.username
+        });
+    });
+
+    socket.on('leave_video_call', () => {
+        if (!socket.roomId || !socket.peerId) return;
+        socket.to(socket.roomId).emit('user_left_video', socket.peerId);
+        socket.peerId = null;
+    });
     // 7. DISCONNECT & CLEANUP
     socket.on('disconnect', () => {
         if (!socket.roomId) return;
 
+        if (socket.peerId) {
+            socket.to(socket.roomId).emit('user_left_video', socket.peerId);
+        }
+        
         socket.to(socket.roomId).emit('chat_message', {
             sender: 'System',
             text: `${socket.username} left the watch party.`

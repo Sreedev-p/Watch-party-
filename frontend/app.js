@@ -391,3 +391,150 @@ socket.on('chat_message', (data) => {
     chatMessages.appendChild(msgDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 });
+
+// ==========================================
+// 7. WEBRTC VIDEO CALLS (WP-107)
+// ==========================================
+let myPeer = null;
+let myVideoStream = null;
+const activePeers = {}; // peerId -> call object
+
+const btnJoinCall = document.getElementById('btn-join-call');
+const btnToggleMic = document.getElementById('btn-toggle-mic');
+const btnToggleCam = document.getElementById('btn-toggle-cam');
+const btnLeaveCall = document.getElementById('btn-leave-call');
+const videoGrid = document.getElementById('video-grid');
+
+btnJoinCall.addEventListener('click', async () => {
+    try {
+        // 1. Grab user's webcam and microphone
+        myVideoStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+        });
+
+        // 2. Display our own local video tile (muted so we don't hear our own echo!)
+        addVideoTile('local', myVideoStream, 'You', true);
+
+        // 3. Toggle UI buttons
+        btnJoinCall.style.display = 'none';
+        btnToggleMic.style.display = 'inline-block';
+        btnToggleCam.style.display = 'inline-block';
+        btnLeaveCall.style.display = 'inline-block';
+
+        // 4. Initialize PeerJS connection to public STUN/Signaling server
+        myPeer = new Peer();
+
+        myPeer.on('open', (peerId) => {
+            socket.emit('join_video_call', peerId);
+        });
+
+        // 5. Answer incoming calls from other room members
+        myPeer.on('call', (call) => {
+            call.answer(myVideoStream);
+            const callerName = call.metadata?.username || 'Peer';
+            
+            call.on('stream', (userVideoStream) => {
+                addVideoTile(call.peer, userVideoStream, callerName, false);
+            });
+            call.on('close', () => removeVideoTile(call.peer));
+            activePeers[call.peer] = call;
+        });
+
+    } catch (err) {
+        alert("Could not access camera/microphone. Please check browser permissions.");
+        console.error(err);
+    }
+});
+
+// When a new user joins the call, call them and send our stream
+socket.on('user_joined_video', ({ peerId, username }) => {
+    if (!myVideoStream || !myPeer) return;
+
+    const myName = document.getElementById('username-input').value.trim() || 'Peer';
+    const call = myPeer.call(peerId, myVideoStream, {
+        metadata: { username: myName }
+    });
+
+    call.on('stream', (userVideoStream) => {
+        addVideoTile(peerId, userVideoStream, username, false);
+    });
+    call.on('close', () => removeVideoTile(peerId));
+    activePeers[peerId] = call;
+});
+
+socket.on('user_left_video', (peerId) => {
+    if (activePeers[peerId]) {
+        activePeers[peerId].close();
+        delete activePeers[peerId];
+    }
+    removeVideoTile(peerId);
+});
+
+// Helper to create a video box in the grid
+function addVideoTile(id, stream, labelText, isMuted) {
+    if (document.getElementById(`tile-${id}`)) return; // Prevent duplicate tiles
+
+    const tile = document.createElement('div');
+    tile.className = 'video-tile';
+    tile.id = `tile-${id}`;
+
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.muted = isMuted;
+    video.addEventListener('loadedmetadata', () => video.play());
+
+    const label = document.createElement('div');
+    label.className = 'video-label';
+    label.textContent = labelText;
+
+    tile.appendChild(video);
+    tile.appendChild(label);
+    videoGrid.appendChild(tile);
+}
+
+function removeVideoTile(id) {
+    const tile = document.getElementById(`tile-${id}`);
+    if (tile) tile.remove();
+}
+
+// Mic Mute / Unmute
+btnToggleMic.addEventListener('click', () => {
+    if (!myVideoStream) return;
+    const audioTrack = myVideoStream.getAudioTracks()[0];
+    if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        btnToggleMic.textContent = audioTrack.enabled ? '🎤 Mute Mic' : '🔇 Unmute Mic';
+    }
+});
+
+// Camera Show / Hide
+btnToggleCam.addEventListener('click', () => {
+    if (!myVideoStream) return;
+    const videoTrack = myVideoStream.getVideoTracks()[0];
+    if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        btnToggleCam.textContent = videoTrack.enabled ? '📷 Hide Cam' : '🚫 Show Cam';
+    }
+});
+
+// Leave Call & Release Hardware Camera Light
+btnLeaveCall.addEventListener('click', () => {
+    if (myVideoStream) {
+        myVideoStream.getTracks().forEach(track => track.stop());
+        myVideoStream = null;
+    }
+    if (myPeer) {
+        myPeer.destroy();
+        myPeer = null;
+    }
+    Object.values(activePeers).forEach(call => call.close());
+    videoGrid.innerHTML = '';
+
+    socket.emit('leave_video_call');
+
+    btnJoinCall.style.display = 'inline-block';
+    btnToggleMic.style.display = 'none';
+    btnToggleCam.style.display = 'none';
+    btnLeaveCall.style.display = 'none';
+});
