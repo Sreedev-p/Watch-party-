@@ -5,8 +5,11 @@ let isSyncing = false;
 let syncFailsafe;
 let debounceTimer;
 
-let isHost = false;
-let hostOnly = false;
+// RBAC State (WP-109)
+const ROLE_LEVEL = { member: 1, curator: 2, admin: 3, owner: 4 };
+let myRole = 'member';
+let isChatRestricted = false;
+let isServerCallMuted = false;
 let captionsEnabled = false;
 let currentRoomInfo = { roomId: '', username: '', isPublic: false };
 
@@ -16,12 +19,37 @@ function blockEcho() {
     syncFailsafe = setTimeout(() => { isSyncing = false; }, 1000);
 }
 
+// Require Admin (3) or Owner (4) to play, pause, seek, or skip
 function canControlPlayback() {
-    if (hostOnly && !isHost) {
-        alert("🔒 The Host has locked the video controls.");
+    if (ROLE_LEVEL[myRole] < ROLE_LEVEL.admin) {
+        alert("🛡️ Only Admins and the Room Owner can control video playback.");
         return false;
     }
     return true;
+}
+
+// Apply UI permissions based on current user's role
+function applyRolePermissions() {
+    const { roomId, username, isPublic } = currentRoomInfo;
+    const roleIcons = { owner: '👑 OWNER', admin: '🛡️ ADMIN', curator: '🎵 CURATOR', member: '👤 MEMBER' };
+
+    document.getElementById('status').innerText =
+        `Room: ${roomId} (${isPublic ? 'Public' : 'Private'}) | User: ${username} [${roleIcons[myRole]}]`;
+
+    // Curators (2), Admins (3), and Owners (4) can search and add to queue
+    const searchInput = document.getElementById('search-input');
+    if (ROLE_LEVEL[myRole] >= ROLE_LEVEL.curator) {
+        searchInput.disabled = false;
+        searchInput.placeholder = "Search YouTube to add to queue...";
+    } else {
+        searchInput.disabled = true;
+        searchInput.value = '';
+        document.getElementById('search-results').innerHTML = '';
+        searchInput.placeholder = "🔒 Requires Curator, Admin, or Owner rank to add videos";
+    }
+
+    // Visually dim seek bar for non-admins
+    document.getElementById('seek-bar').disabled = (ROLE_LEVEL[myRole] < ROLE_LEVEL.admin);
 }
 
 // ==========================================
@@ -49,7 +77,6 @@ window.onYouTubeIframeAPIReady = function() {
 };
 
 function onPlayerReady() {
-    console.log("YouTube player loaded in background.");
     setInterval(updateProgressBar, 500);
 }
 
@@ -70,7 +97,7 @@ function onPlayerStateChange(event) {
 }
 
 // ==========================================
-// 2. CUSTOM PLAYER CONTROLS & KEYBOARD SHORTCUTS (WP-108)
+// 2. CUSTOM PLAYER CONTROLS & KEYBOARD SHORTCUTS (WP-108 & WP-109)
 // ==========================================
 function formatTime(seconds) {
     const min = Math.floor(seconds / 60);
@@ -169,11 +196,6 @@ document.getElementById('btn-skip').addEventListener('click', () => {
     socket.emit('skip_video');
 });
 
-document.getElementById('btn-host-lock').addEventListener('click', () => {
-    if (!isHost) return;
-    socket.emit('toggle_host_lock');
-});
-
 document.getElementById('seek-bar').addEventListener('input', (e) => {
     if (!canControlPlayback()) return;
     const duration = player.getDuration();
@@ -195,7 +217,7 @@ document.getElementById('volume-slider').addEventListener('input', (e) => {
 
 window.addEventListener('keydown', (e) => {
     const loginVisible = document.getElementById('login-overlay').style.display !== 'none';
-    const isTyping = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    const isTyping = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
     if (loginVisible || isTyping) return;
 
     switch (e.code) {
@@ -231,7 +253,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // ==========================================
-// 3. ROOM, LOBBY, KNOCK & RBAC LOGIC (WP-104, WP-106, WP-108)
+// 3. ROOM, LOBBY, KNOCK & RBAC ROSTER (WP-104, WP-106, WP-109)
 // ==========================================
 const loginAlert = document.getElementById('login-alert');
 
@@ -240,18 +262,6 @@ function showLoginAlert(msg, isError = true) {
     loginAlert.style.background = isError ? '#5a1d1d' : '#1d4d5a';
     loginAlert.style.color = '#fff';
     loginAlert.textContent = msg;
-}
-
-function updateStatusBanner() {
-    const { roomId, username, isPublic } = currentRoomInfo;
-    const lockText = hostOnly ? '🔒 Host-Only Controls' : '🔓 Collaborative Controls';
-    document.getElementById('status').innerText = 
-        `Room: ${roomId} (${isPublic ? 'Public' : 'Private'}) | ${lockText} | User: ${username} ${isHost ? '👑 (Host)' : ''}`;
-    
-    const lockBtn = document.getElementById('btn-host-lock');
-    lockBtn.style.display = isHost ? 'inline-block' : 'none';
-    lockBtn.innerText = hostOnly ? '🔒' : '🔓';
-    lockBtn.style.background = hostOnly ? '#e50914' : '#444';
 }
 
 function getCredentials() {
@@ -282,11 +292,10 @@ socket.on('waiting_for_host', (msg) => showLoginAlert(msg, false));
 
 socket.on('room_joined', (data) => {
     currentRoomInfo = { roomId: data.roomId, username: data.username, isPublic: data.isPublic };
-    isHost = data.isHost;
-    hostOnly = data.hostOnly;
+    myRole = data.role;
 
     document.getElementById('login-overlay').style.display = 'none';
-    updateStatusBanner();
+    applyRolePermissions();
 
     if (player && typeof player.unMute === 'function') {
         player.unMute();
@@ -296,14 +305,106 @@ socket.on('room_joined', (data) => {
     }
 });
 
-socket.on('host_lock_updated', (lockedState) => {
-    hostOnly = lockedState;
-    updateStatusBanner();
+socket.on('role_updated', (newRole) => {
+    myRole = newRole;
+    applyRolePermissions();
 });
 
-socket.on('promoted_to_host', () => {
-    isHost = true;
-    updateStatusBanner();
+socket.on('kicked_from_room', (reason) => {
+    alert(reason);
+    window.location.reload();
+});
+
+// Render Live Member Roster & Admin/Owner Moderation Toolbar
+socket.on('update_roster', (users) => {
+    document.getElementById('roster-count').textContent = users.length;
+    const rosterList = document.getElementById('roster-list');
+    rosterList.innerHTML = '';
+
+    // Sort roster by rank (Owner -> Admin -> Curator -> Member)
+    users.sort((a, b) => ROLE_LEVEL[b.role] - ROLE_LEVEL[a.role]);
+
+    const myLevel = ROLE_LEVEL[myRole];
+
+    users.forEach(u => {
+        const item = document.createElement('div');
+        item.className = 'roster-item';
+
+        const header = document.createElement('div');
+        header.className = 'roster-header';
+
+        const nameSpan = document.createElement('span');
+        const statusTags = [];
+        if (u.inCall) statusTags.push(u.callMuted ? '🎙️❌' : '📷');
+        if (u.chatRestricted) statusTags.push('🔇');
+        nameSpan.textContent = `${u.username} ${u.id === socket.id ? '(You)' : ''} ${statusTags.join(' ')}`;
+
+        const badge = document.createElement('span');
+        badge.className = `role-badge role-${u.role}`;
+        badge.textContent = u.role;
+
+        header.appendChild(nameSpan);
+        header.appendChild(badge);
+        item.appendChild(header);
+
+        // Show moderation controls if we are Admin/Owner AND we strictly outrank this user
+        const targetLevel = ROLE_LEVEL[u.role];
+        if (u.id !== socket.id && myLevel >= ROLE_LEVEL.admin && myLevel > targetLevel) {
+            const toolbar = document.createElement('div');
+            toolbar.className = 'mod-toolbar';
+
+            // 1. Role Promotion/Demotion Dropdown
+            const roleSelect = document.createElement('select');
+            roleSelect.className = 'mod-select';
+            const allowedRoles = (myRole === 'owner') ? ['member', 'curator', 'admin'] : ['member', 'curator'];
+
+            allowedRoles.forEach(r => {
+                const opt = document.createElement('option');
+                opt.value = r;
+                opt.textContent = `Rank: ${r.toUpperCase()}`;
+                if (u.role === r) opt.selected = true;
+                roleSelect.appendChild(opt);
+            });
+
+            roleSelect.onchange = (e) => {
+                socket.emit('moderate_user', { targetId: u.id, action: 'set_role', newRole: e.target.value });
+            };
+            toolbar.appendChild(roleSelect);
+
+            // 2. Restrict/Unrestrict Chat Button
+            const chatBtn = document.createElement('button');
+            chatBtn.className = 'mod-btn';
+            chatBtn.textContent = u.chatRestricted ? 'Unmute Chat' : 'Mute Chat';
+            chatBtn.onclick = () => socket.emit('moderate_user', { targetId: u.id, action: 'toggle_chat' });
+            toolbar.appendChild(chatBtn);
+
+            // 3. Call Moderation (Mute Mic & Remove from Call)
+            if (u.inCall) {
+                const muteCallBtn = document.createElement('button');
+                muteCallBtn.className = 'mod-btn';
+                muteCallBtn.textContent = u.callMuted ? 'Unmute Mic' : 'Mute Mic';
+                muteCallBtn.onclick = () => socket.emit('moderate_user', { targetId: u.id, action: 'toggle_call_mute' });
+                toolbar.appendChild(muteCallBtn);
+
+                const endCallBtn = document.createElement('button');
+                endCallBtn.className = 'mod-btn danger';
+                endCallBtn.textContent = 'End Call';
+                endCallBtn.onclick = () => socket.emit('moderate_user', { targetId: u.id, action: 'remove_from_call' });
+                toolbar.appendChild(endCallBtn);
+            }
+
+            // 4. Kick from Room Button
+            const kickBtn = document.createElement('button');
+            kickBtn.className = 'mod-btn danger';
+            kickBtn.textContent = 'Kick';
+            kickBtn.onclick = () => socket.emit('moderate_user', { targetId: u.id, action: 'kick_from_room' });
+            toolbar.appendChild(kickBtn);
+
+            item.appendChild(toolbar);
+        }
+
+        rosterList.appendChild(item);
+    });
 });
 
 socket.on('knock_request', ({ requesterId, username }) => {
@@ -421,6 +522,7 @@ socket.on('load_new_video', (videoId) => {
 // 5. DEBOUNCED SEARCH & QUEUE (WP-102 & WP-105)
 // ==========================================
 document.getElementById('search-input').addEventListener('input', (e) => {
+    if (ROLE_LEVEL[myRole] < ROLE_LEVEL.curator) return;
     const query = e.target.value;
     clearTimeout(debounceTimer);
 
@@ -485,12 +587,20 @@ socket.on('update_queue', (queue) => {
 });
 
 // ==========================================
-// 6. LIVE CHAT (WP-103)
+// 6. LIVE CHAT & CHAT RESTRICTION (WP-103 & WP-109)
 // ==========================================
 const chatInput = document.getElementById('chat-input');
 const chatMessages = document.getElementById('chat-messages');
 
+socket.on('chat_restriction_updated', (restricted) => {
+    isChatRestricted = restricted;
+    chatInput.disabled = restricted;
+    document.getElementById('btn-send-chat').disabled = restricted;
+    chatInput.placeholder = restricted ? "🔇 You are restricted from chatting." : "Type a message...";
+});
+
 function sendMessage() {
+    if (isChatRestricted) return;
     const text = chatInput.value.trim();
     if (text.length > 0) {
         socket.emit('chat_message', text);
@@ -522,11 +632,11 @@ socket.on('chat_message', (data) => {
 });
 
 // ==========================================
-// 7. WEBRTC VIDEO CALLS (WP-107)
+// 7. WEBRTC VIDEO CALLS & ADMIN ENFORCEMENT (WP-107 & WP-109)
 // ==========================================
 let myPeer = null;
 let myVideoStream = null;
-const activePeers = {}; // peerId -> call object
+const activePeers = {};
 
 const btnJoinCall = document.getElementById('btn-join-call');
 const btnToggleMic = document.getElementById('btn-toggle-mic');
@@ -534,31 +644,44 @@ const btnToggleCam = document.getElementById('btn-toggle-cam');
 const btnLeaveCall = document.getElementById('btn-leave-call');
 const videoGrid = document.getElementById('video-grid');
 
+function stopLocalCall() {
+    if (myVideoStream) {
+        myVideoStream.getTracks().forEach(track => track.stop());
+        myVideoStream = null;
+    }
+    if (myPeer) {
+        myPeer.destroy();
+        myPeer = null;
+    }
+    Object.values(activePeers).forEach(call => call.close());
+    videoGrid.innerHTML = '';
+
+    btnJoinCall.style.display = 'inline-block';
+    btnToggleMic.style.display = 'none';
+    btnToggleCam.style.display = 'none';
+    btnLeaveCall.style.display = 'none';
+}
+
 btnJoinCall.addEventListener('click', async () => {
     try {
-        // 1. Grab user's webcam and microphone
         myVideoStream = await navigator.mediaDevices.getUserMedia({
             video: true,
             audio: true
         });
 
-        // 2. Display our own local video tile (muted so we don't hear our own echo!)
         addVideoTile('local', myVideoStream, 'You', true);
 
-        // 3. Toggle UI buttons
         btnJoinCall.style.display = 'none';
         btnToggleMic.style.display = 'inline-block';
         btnToggleCam.style.display = 'inline-block';
         btnLeaveCall.style.display = 'inline-block';
 
-        // 4. Initialize PeerJS connection to public STUN/Signaling server
         myPeer = new Peer();
 
         myPeer.on('open', (peerId) => {
             socket.emit('join_video_call', peerId);
         });
 
-        // 5. Answer incoming calls from other room members
         myPeer.on('call', (call) => {
             call.answer(myVideoStream);
             const callerName = call.metadata?.username || 'Peer';
@@ -576,11 +699,10 @@ btnJoinCall.addEventListener('click', async () => {
     }
 });
 
-// When a new user joins the call, call them and send our stream
 socket.on('user_joined_video', ({ peerId, username }) => {
     if (!myVideoStream || !myPeer) return;
 
-    const myName = document.getElementById('username-input').value.trim() || 'Peer';
+    const myName = currentRoomInfo.username || 'Peer';
     const call = myPeer.call(peerId, myVideoStream, {
         metadata: { username: myName }
     });
@@ -600,9 +722,26 @@ socket.on('user_left_video', (peerId) => {
     removeVideoTile(peerId);
 });
 
-// Helper to create a video box in the grid
+// Admin/Owner Forced Call Mute
+socket.on('force_mute_status', (mutedByAdmin) => {
+    isServerCallMuted = mutedByAdmin;
+    if (!myVideoStream) return;
+    const audioTrack = myVideoStream.getAudioTracks()[0];
+    if (audioTrack) {
+        audioTrack.enabled = !mutedByAdmin;
+        btnToggleMic.disabled = mutedByAdmin;
+        btnToggleMic.textContent = mutedByAdmin ? '🎙️❌ Server Muted' : '🎤 Mute Mic';
+    }
+});
+
+// Admin/Owner Forced Call Removal
+socket.on('force_leave_call', () => {
+    stopLocalCall();
+    alert("📷❌ An Admin removed you from the video call.");
+});
+
 function addVideoTile(id, stream, labelText, isMuted) {
-    if (document.getElementById(`tile-${id}`)) return; // Prevent duplicate tiles
+    if (document.getElementById(`tile-${id}`)) return;
 
     const tile = document.createElement('div');
     tile.className = 'video-tile';
@@ -627,9 +766,8 @@ function removeVideoTile(id) {
     if (tile) tile.remove();
 }
 
-// Mic Mute / Unmute
 btnToggleMic.addEventListener('click', () => {
-    if (!myVideoStream) return;
+    if (!myVideoStream || isServerCallMuted) return;
     const audioTrack = myVideoStream.getAudioTracks()[0];
     if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
@@ -637,7 +775,6 @@ btnToggleMic.addEventListener('click', () => {
     }
 });
 
-// Camera Show / Hide
 btnToggleCam.addEventListener('click', () => {
     if (!myVideoStream) return;
     const videoTrack = myVideoStream.getVideoTracks()[0];
@@ -647,23 +784,7 @@ btnToggleCam.addEventListener('click', () => {
     }
 });
 
-// Leave Call & Release Hardware Camera Light
 btnLeaveCall.addEventListener('click', () => {
-    if (myVideoStream) {
-        myVideoStream.getTracks().forEach(track => track.stop());
-        myVideoStream = null;
-    }
-    if (myPeer) {
-        myPeer.destroy();
-        myPeer = null;
-    }
-    Object.values(activePeers).forEach(call => call.close());
-    videoGrid.innerHTML = '';
-
+    stopLocalCall();
     socket.emit('leave_video_call');
-
-    btnJoinCall.style.display = 'inline-block';
-    btnToggleMic.style.display = 'none';
-    btnToggleCam.style.display = 'none';
-    btnLeaveCall.style.display = 'none';
 });
