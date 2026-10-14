@@ -53,6 +53,18 @@
         <div id="queue-list" style="font-size: 13px; color: #aaa;">Queue is empty.</div>
     </div>
 
+    <!-- WebRTC Video Call Bar (WP-107) -->
+    <div id="video-call-bar">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 14px; font-weight: bold;">📷 Room Video Call</span>
+            <button id="btn-join-call" class="btn-primary" style="padding: 6px 12px; font-size: 13px;">Join Call</button>
+            <button id="btn-toggle-mic" class="control-btn" style="display: none;">🎤 Mute Mic</button>
+            <button id="btn-toggle-cam" class="control-btn" style="display: none;">📷 Hide Cam</button>
+            <button id="btn-leave-call" class="control-btn" style="display: none; background: #5a1d1d;">Leave Call</button>
+        </div>
+        <div id="video-grid"></div>
+    </div>
+
     <!-- Main Content Layout -->
     <div id="main-layout">
         <!-- Video Player -->
@@ -81,6 +93,10 @@
 
     <!-- External Libraries & App Script -->
     <script src="/socket.io/socket.io.js"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="app.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://www.youtube.com/iframe_api"></script>
     <script src="app.js"></script>
 </body>
