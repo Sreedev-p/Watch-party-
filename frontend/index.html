@@ -3,114 +3,276 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Watch Party</title>
+    <title>PulseParty — Social Watch Party Platform</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- Login & Public Lobby Overlay (WP-104 & WP-106) -->
-    <div id="login-overlay">
-        <div class="login-box">
-            <h2>Watch Party</h2>
-            <div id="login-alert" style="display:none; padding: 8px; border-radius: 4px; font-size: 13px; text-align: center;"></div>
+    <!-- 1. AUTHENTICATION VIEW -->
+    <div id="auth-view" class="full-screen-center">
+        <div class="glass-card auth-card">
+            <div class="brand-logo">⚡ Pulse<span>Party</span></div>
+            <p class="subtitle">Synchronized Cinema, WebRTC Calls & Persistent Parties</p>
+            <div id="auth-alert" class="alert-banner" style="display:none;"></div>
             
-            <input type="text" id="username-input" class="login-input" placeholder="Your Name" required>
-            <input type="text" id="room-input" class="login-input" placeholder="Room Code (e.g., 1234)" required>
+            <input type="text" id="auth-username" class="modern-input" placeholder="Username" required>
+            <input type="password" id="auth-password" class="modern-input" placeholder="Password" required>
             
-            <label class="checkbox-label" title="Only applies when creating a new room">
-                <input type="checkbox" id="public-checkbox"> Make Public (when creating)
+            <div class="row-gap">
+                <button id="btn-login" class="btn-accent flex-1">Sign In</button>
+                <button id="btn-register" class="btn-secondary flex-1">Create Account</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. TOP NAVIGATION BAR (Visible on Dashboard & Party Views) -->
+    <nav id="top-navbar" style="display: none;">
+        <div class="nav-left">
+            <div class="brand-logo small" id="nav-logo" style="cursor:pointer;">⚡ Pulse<span>Party</span></div>
+            <div class="nav-links">
+                <button class="nav-tab active" data-tab="home">🏠 Home</button>
+                <button class="nav-tab" data-tab="my-parties">🎬 My Parties</button>
+                <button class="nav-tab" data-tab="friends">👥 Friends</button>
+                <button class="nav-tab" data-tab="profile">👤 My Profile</button>
+            </div>
+        </div>
+
+        <div class="nav-center">
+            <input type="text" id="global-search-input" class="modern-input search-pill" placeholder="🔍 Search parties (name / ID) or users...">
+            <div id="global-search-dropdown" class="dropdown-panel" style="display: none;"></div>
+        </div>
+
+        <div class="nav-right">
+            <span class="user-pill">👤 <b id="nav-username"></b></span>
+            <button id="btn-logout" class="btn-danger-sm">Logout</button>
+        </div>
+    </nav>
+
+    <!-- LIVE INVITE TOAST CONTAINER -->
+    <div id="invite-toast-container"></div>
+
+    <!-- 3. MAIN DASHBOARD VIEW -->
+    <div id="dashboard-view" class="dashboard-grid" style="display: none;">
+        <!-- Left Sidebar: Toggle between My Parties & Global Top Parties -->
+        <aside class="glass-panel sidebar-panel">
+            <div class="sidebar-toggle-bar">
+                <button id="toggle-my-parties" class="toggle-btn active">My Parties</button>
+                <button id="toggle-global-parties" class="toggle-btn">🌐 Global Top</button>
+            </div>
+            <div id="sidebar-party-list" class="scrollable-list"></div>
+        </aside>
+
+        <!-- Main Workspace Area -->
+        <main class="dashboard-main">
+            <!-- Quick Action Hero Cards -->
+            <div class="hero-actions">
+                <div class="glass-card hero-card">
+                    <div>
+                        <h3>✨ Create Custom Party</h3>
+                        <p>Name your party, choose Public or Private, and invite friends.</p>
+                    </div>
+                    <button id="btn-open-create-modal" class="btn-accent">+ New Party</button>
+                </div>
+
+                <div class="glass-card hero-card quick-card">
+                    <div>
+                        <h3>⚡ Instant Quick Party</h3>
+                        <p>No setup needed. Generates a private UUID link to share immediately.</p>
+                    </div>
+                    <button id="btn-quick-party" class="btn-secondary">⚡ Launch Quick Party</button>
+                </div>
+
+                <div class="glass-card hero-card join-code-card">
+                    <div>
+                        <h3>🔑 Have a Party ID?</h3>
+                        <div class="row-gap" style="margin-top:8px;">
+                            <input type="text" id="direct-join-id" class="modern-input" placeholder="e.g. PTY-A1B2C3">
+                            <button id="btn-direct-join" class="btn-accent">Join</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dynamic Content Sections (Home / Created by Me / Friends) -->
+            <div id="dashboard-notice" class="alert-banner" style="display:none; margin-bottom: 15px;"></div>
+
+            <section id="section-created-by-me" class="content-section">
+                <div class="section-header">
+                    <h3>👑 Parties Created By You</h3>
+                </div>
+                <div id="my-created-parties-grid" class="party-cards-grid"></div>
+            </section>
+
+            <section id="section-all-parties" class="content-section">
+                <div class="section-header">
+                    <h3>🔥 All Server Parties</h3>
+                </div>
+                <div id="all-server-parties-grid" class="party-cards-grid"></div>
+            </section>
+
+            <section id="section-friends" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <h3>👥 Your Friends Network</h3>
+                </div>
+                <div id="friends-grid" class="party-cards-grid"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- 4. CREATE PARTY + FRIEND INVITE MODAL -->
+    <div id="create-party-modal" class="modal-backdrop" style="display: none;">
+        <div class="glass-card modal-box">
+            <h3>✨ Create New Watch Party</h3>
+            <input type="text" id="new-party-name" class="modern-input" placeholder="Party Name (e.g., Nolan Movie Marathon)">
+            
+            <label class="checkbox-row">
+                <input type="checkbox" id="new-party-public" checked>
+                <span>Make Party Public (Anyone in Global Lobby can join)</span>
             </label>
 
-            <div style="display: flex; gap: 10px;">
-                <button id="btn-create-room" class="btn-primary" style="flex: 1;">Create Room</button>
-                <button id="btn-join-room" class="control-btn" style="flex: 1; font-weight: bold; font-size: 15px;">Join Room</button>
+            <div class="invite-friends-box">
+                <h4>Invite Friends (Optional)</h4>
+                <div id="create-modal-friends-list" class="scrollable-list" style="max-height: 130px;"></div>
             </div>
 
-            <div id="public-rooms-section">
-                <h4>Active Public Rooms</h4>
-                <div id="public-rooms-list">
-                    <div style="font-size: 12px; color: #666;">No public rooms active.</div>
+            <div class="row-gap" style="margin-top: 10px;">
+                <button id="btn-confirm-create-party" class="btn-accent flex-1">Create & Launch Party</button>
+                <button id="btn-cancel-create-modal" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. USER PROFILE INSPECTION MODAL -->
+    <div id="profile-modal" class="modal-backdrop" style="display: none;">
+        <div class="glass-card modal-box wide-modal">
+            <div class="row-between">
+                <h3 id="profile-modal-title">👤 User Profile</h3>
+                <button id="btn-close-profile-modal" class="btn-secondary">✕ Close</button>
+            </div>
+            <div id="profile-modal-actions" style="margin-bottom: 12px;"></div>
+            <div class="profile-columns">
+                <div class="profile-col">
+                    <h4>👥 Friends</h4>
+                    <div id="profile-modal-friends" class="scrollable-list"></div>
+                </div>
+                <div class="profile-col">
+                    <h4>🎬 Parties Member Of</h4>
+                    <div id="profile-modal-parties" class="scrollable-list"></div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Header Status -->
-    <div class="status-box">
-        <span id="status">Waiting to join room...</span>
-    </div>
-    <!-- Host Knock Approval Banner -->
-    <div id="knock-container" style="width: 640px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;"></div>
-    <!-- Live Debounced Search (WP-102) -->
-    <div id="search-container">
-        <input type="text" id="search-input" placeholder="Search YouTube to add to queue...">
-    </div>
-    <div id="search-results"></div>
-
-    <!-- Video Queue UI (WP-105) -->
-    <div id="queue-container">
-        <h4 style="margin: 0 0 6px 0;">Up Next</h4>
-        <div id="queue-list" style="font-size: 13px; color: #aaa;">Queue is empty.</div>
-    </div>
-
-    <!-- WebRTC Video Call Bar (WP-107) -->
-    <div id="video-call-bar">
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 14px; font-weight: bold;">📷 Room Video Call</span>
-            <button id="btn-join-call" class="btn-primary" style="padding: 6px 12px; font-size: 13px;">Join Call</button>
-            <button id="btn-toggle-mic" class="control-btn" style="display: none;">🎤 Mute Mic</button>
-            <button id="btn-toggle-cam" class="control-btn" style="display: none;">📷 Hide Cam</button>
-            <button id="btn-leave-call" class="control-btn" style="display: none; background: #5a1d1d;">Leave Call</button>
-        </div>
-        <div id="video-grid"></div>
-    </div>
-
-    <!-- Main Content Layout -->
-    <div id="main-layout">
-        <!-- Video Player -->
-        <!-- Video Player -->
-        <div id="video-wrapper">
-            <div id="player-container" style="position: relative; width: 640px; height: 360px; overflow: hidden;">
-                <div id="player"></div>
-                <div id="player-shield" title="Click to Play/Pause (Space)"></div>
-            </div>
-            <div id="custom-controls">
-                <button id="btn-play-pause" class="icon-btn" title="Play/Pause (Space)">▶</button>
-                <button id="btn-skip" class="icon-btn" title="Skip to Next in Queue">⏭</button>
-                <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
-                <span id="time-display">0:00 / 0:00</span>
-                <button id="btn-captions" class="icon-btn" title="Toggle Captions (C)">CC</button>
-                <div class="control-group">
-                    <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">🔇</button>
-                    <input type="range" id="volume-slider" value="0" min="0" max="100" title="Volume (Up/Down Arrows)">
+    <!-- 6. ACTIVE PARTY ROOM VIEW -->
+    <div id="party-view" style="display: none;">
+        <!-- Party Top Header Bar -->
+        <div class="glass-panel party-header-bar">
+            <div class="row-gap">
+                <button id="btn-back-dashboard" class="btn-secondary">← Dashboard</button>
+                <div>
+                    <h3 id="active-party-title" style="margin:0;">Party Title</h3>
+                    <span id="active-party-meta" class="meta-subtext">ID: PTY-0000</span>
                 </div>
             </div>
-            <div id="shortcut-hint">
-                Shortcuts: <b>Space</b> Play/Pause | <b>←/→</b> Seek 5s | <b>↑/↓</b> Volume | <b>M</b> Mute | <b>C</b> Captions
-            </div>
-        </div>
-        <!-- Live Chat Sidebar (WP-103) -->
-        <!-- Live Chat Sidebar (WP-103) -->
-        <div id="chat-container">
-            <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #ccc;">💬 Live Chat</h4>
-            <div id="chat-messages"></div>
-            <div id="chat-input-container">
-                <input type="text" id="chat-input" placeholder="Type a message...">
-                <button id="btn-send-chat" class="control-btn">Send</button>
+
+            <div class="row-gap">
+                <button id="btn-copy-party-id" class="btn-secondary">📋 Copy Party ID</button>
+                <button id="btn-delete-active-party" class="btn-danger-sm" style="display:none;">🗑️ Delete Party</button>
             </div>
         </div>
 
-        <!-- Live Room Roster & RBAC Panel (WP-109) -->
-        <div id="roster-container">
-            <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #ccc;">👥 Room Members (<span id="roster-count">0</span>)</h4>
-            <div id="roster-list"></div>
+        <!-- Host Knock Requests Container -->
+        <div id="knock-container"></div>
+
+        <!-- Multi-Source Media Bar (YouTube / TMDB Movies / Direct URL / Local Video File) -->
+        <div class="glass-panel media-toolbar">
+            <select id="media-source-select" class="modern-select">
+                <option value="youtube">▶ YouTube Search</option>
+                <option value="tmdb">🎬 TMDB Movie Search</option>
+                <option value="url">🔗 Direct Video URL (.mp4 / Web)</option>
+                <option value="local">💻 Stream Local Video File</option>
+            </select>
+
+            <input type="text" id="media-search-input" class="modern-input flex-1" placeholder="Search YouTube or TMDB Movies...">
+            <button id="btn-load-url" class="btn-accent" style="display:none;">Load Stream URL</button>
+            <input type="file" id="local-file-input" accept="video/*" class="modern-input flex-1" style="display:none;">
+        </div>
+
+        <div id="search-results"></div>
+
+        <!-- WebRTC Video Call Ribbon -->
+        <div id="video-call-bar" class="glass-panel">
+            <div class="row-between">
+                <div class="row-gap">
+                    <span style="font-weight:bold; font-size:13px;">📷 Party Voice & Video</span>
+                    <button id="btn-join-call" class="btn-accent btn-sm">Join Call</button>
+                    <button id="btn-toggle-mic" class="btn-secondary btn-sm" style="display:none;">🎤 Mute Mic</button>
+                    <button id="btn-toggle-cam" class="btn-secondary btn-sm" style="display:none;">📷 Hide Cam</button>
+                    <button id="btn-leave-call" class="btn-danger-sm" style="display:none;">Leave Call</button>
+                </div>
+                <span id="now-playing-label" class="meta-subtext">Now Playing: Default</span>
+            </div>
+            <div id="video-grid"></div>
+        </div>
+
+        <!-- 3-Column Cinema Workspace: Video Player + Persistent Chat + RBAC & Invite Roster -->
+        <div id="main-layout">
+            <!-- Left: Multi-Engine Video Player & Queue -->
+            <div class="player-column">
+                <div id="video-wrapper" class="glass-panel">
+                    <div id="player-container">
+                        <div id="player"></div>
+                        <video id="html5-player" style="display:none; width:100%; height:100%; background:#000;"></video>
+                        <div id="player-shield" title="Click to Play/Pause (Space)"></div>
+                    </div>
+
+                    <div id="custom-controls">
+                        <button id="btn-play-pause" class="icon-btn" title="Play/Pause (Space)">▶</button>
+                        <button id="btn-skip" class="icon-btn" title="Skip to Next in Queue">⏭</button>
+                        <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
+                        <span id="time-display">0:00 / 0:00</span>
+                        <button id="btn-captions" class="icon-btn" title="Toggle Captions (C)">CC</button>
+                        <div class="control-group">
+                            <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">🔇</button>
+                            <input type="range" id="volume-slider" value="100" min="0" max="100">
+                        </div>
+                    </div>
+
+                    <div id="shortcut-hint">
+                        Shortcuts: <b>Space</b> Play/Pause | <b>←/→</b> Seek 5s | <b>↑/↓</b> Volume | <b>M</b> Mute | <b>C</b> Captions
+                    </div>
+                </div>
+
+                <!-- Persistent Up-Next Queue -->
+                <div id="queue-container" class="glass-panel">
+                    <h4 style="margin: 0 0 8px 0; font-size: 13px; color: #94a3b8;">🎵 Up Next in Party Queue</h4>
+                    <div id="queue-list" style="font-size: 13px; color: #cbd5e1;">Queue is empty.</div>
+                </div>
+            </div>
+
+            <!-- Middle: Persistent Live Chat -->
+            <div id="chat-container" class="glass-panel">
+                <h4 class="panel-title">💬 Party Chat History</h4>
+                <div id="chat-messages"></div>
+                <div id="chat-input-container">
+                    <input type="text" id="chat-input" class="modern-input" placeholder="Send a message...">
+                    <button id="btn-send-chat" class="btn-accent">Send</button>
+                </div>
+            </div>
+
+            <!-- Right: RBAC Member Roster & Live Friend Inviter -->
+            <div id="roster-container" class="glass-panel">
+                <h4 class="panel-title">👥 Party Members (<span id="roster-count">0</span>)</h4>
+                <div id="roster-list" class="scrollable-list"></div>
+
+                <div id="live-invite-section" style="border-top: 1px solid #262936; padding-top: 10px; margin-top: 10px;">
+                    <h4 class="panel-title" style="font-size:12px;">➕ Invite Friends to Party</h4>
+                    <div id="party-invite-friends-list" class="scrollable-list" style="max-height: 110px;"></div>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- External Libraries & App Script -->
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="https://www.youtube.com/iframe_api"></script>
-    <script src="app.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://www.youtube.com/iframe_api"></script>
