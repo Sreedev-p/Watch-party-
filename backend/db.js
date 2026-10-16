@@ -25,9 +25,12 @@ async function initDB() {
             video_title TEXT DEFAULT 'Interstellar Official Trailer',
             last_time REAL DEFAULT 0,
             queue_json JSONB DEFAULT '[]'::jsonb,
+            history_json JSONB DEFAULT '[]'::jsonb,
             chat_json JSONB DEFAULT '[]'::jsonb,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        ALTER TABLE parties ADD COLUMN IF NOT EXISTS history_json JSONB DEFAULT '[]'::jsonb;
 
         CREATE TABLE IF NOT EXISTS party_roles (
             party_id VARCHAR(50) REFERENCES parties(party_id) ON DELETE CASCADE,
@@ -44,7 +47,7 @@ async function initDB() {
             PRIMARY KEY (user_id, friend_id)
         );
     `);
-    console.log("PostgreSQL WP-200 Social & Persistent Party tables initialized.");
+    console.log("PostgreSQL WP-201 tables & history_json column verified.");
 }
 
 module.exports = {
@@ -112,8 +115,8 @@ module.exports = {
     },
     async saveParty(p) {
         await pool.query(
-            `INSERT INTO parties (party_id, party_name, owner_user_id, is_public, video_source, video_id, video_title, last_time, queue_json, chat_json)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+            `INSERT INTO parties (party_id, party_name, owner_user_id, is_public, video_source, video_id, video_title, last_time, queue_json, history_json, chat_json)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb)
              ON CONFLICT (party_id) DO UPDATE SET
                 party_name = EXCLUDED.party_name,
                 owner_user_id = EXCLUDED.owner_user_id,
@@ -123,6 +126,7 @@ module.exports = {
                 video_title = EXCLUDED.video_title,
                 last_time = EXCLUDED.last_time,
                 queue_json = EXCLUDED.queue_json,
+                history_json = EXCLUDED.history_json,
                 chat_json = EXCLUDED.chat_json`,
             [
                 p.partyId,
@@ -134,6 +138,7 @@ module.exports = {
                 p.videoTitle || 'Default Video',
                 Number(p.time) || 0,
                 JSON.stringify(p.queue || []),
+                JSON.stringify((p.history || []).slice(-50)),
                 JSON.stringify((p.chatHistory || []).slice(-100))
             ]
         );
