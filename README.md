@@ -1,13 +1,6 @@
-# ⚡ PulseParty
+# PulseParty
 
 **A Distributed Real-Time Synchronized Cinema & Social Streaming Platform**
-
-![Node.js](https://img.shields.io/badge/Node.js-v20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
-![Socket.io](https://img.shields.io/badge/Socket.io-WebSockets-010101?style=flat-square&logo=socketdotio&logoColor=white)
-![WebRTC](https://img.shields.io/badge/WebRTC-PeerJS-333333?style=flat-square&logo=webrtc&logoColor=white)
-![Latency](https://img.shields.io/badge/p95_Latency-21ms-10b981?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
 
 **PulseParty** is a full-stack social watch-party engine designed to solve the core challenges of multi-user media synchronization: network jitter, abrupt frame-seeking stutters, ephemeral room loss, and local media buffering bottlenecks. 
 
@@ -43,4 +36,16 @@ Built on a hybrid **In-Memory Write-Through Cache + PostgreSQL (`JSONB`)** archi
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                        NODE.JS / EXPRESS CORE ENGINE                       │
 │  ┌──────────────────────┐  ┌────────────────────────────────────────────┐  │
-│  │ Byte-Range Streamer  │  │
+│  │ Byte-Range Streamer  │  │     In-Memory Write-Through State Cache    │  │
+│  │ • /api/upload-local  │  │ • O(1) Room Lookups & 2.5s Heartbeat Tick  │  │
+│  │ • /api/stream/:file  │  │ • RBAC Enforcement & Echo-Loop Guards      │  │
+│  │ • 206 Partial Content│  │ • Bigram Dice-Coefficient Fuzzy Search     │  │
+│  └──────────┬───────────┘  └──────────────────────┬─────────────────────┘  │
+└─────────────┼─────────────────────────────────────┼────────────────────────┘
+              │ fs.createReadStream                 │ Async Upserts (pg.Pool)
+              ▼                                     ▼
+     ┌─────────────────┐               ┌─────────────────────────┐
+     │ Local NVMe Disk │               │    PostgreSQL 16 DB     │
+     │ backend/uploads │               │ users | parties (JSONB) │
+     └─────────────────┘               │ party_roles | friends   │
+                                       └─────────────────────────┘
