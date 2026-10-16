@@ -12,7 +12,6 @@ const db = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'watch-party-super-secret-key-2026';
 
-// Ensure local chunked media uploads folder exists
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -31,6 +30,49 @@ const ROLE_LEVEL = { member: 1, curator: 2, admin: 3, owner: 4 };
 
 const parties = {};
 const onlineUsers = {};
+
+// Built-in Curated Movie Discovery Catalog (Supports Categories, Rating Filters & Fuzzy Search)
+const CURATED_MOVIES = [
+    { videoId: 'zSWdZVtXT7E', title: 'Interstellar', category: 'Sci-Fi', year: 2014, rating: 8.7, thumb: 'https://img.youtube.com/vi/zSWdZVtXT7E/mqdefault.jpg' },
+    { videoId: 'YoHD9XEInc0', title: 'Inception', category: 'Sci-Fi', year: 2010, rating: 8.8, thumb: 'https://img.youtube.com/vi/YoHD9XEInc0/mqdefault.jpg' },
+    { videoId: 'LdOM0x0XDMo', title: 'Tenet', category: 'Sci-Fi', year: 2020, rating: 7.3, thumb: 'https://img.youtube.com/vi/LdOM0x0XDMo/mqdefault.jpg' },
+    { videoId: 'uYPbbksJxIg', title: 'Oppenheimer', category: 'Thriller', year: 2023, rating: 8.9, thumb: 'https://img.youtube.com/vi/uYPbbksJxIg/mqdefault.jpg' },
+    { videoId: 'EXeTwQWrcwY', title: 'The Dark Knight', category: 'Action', year: 2008, rating: 9.0, thumb: 'https://img.youtube.com/vi/EXeTwQWrcwY/mqdefault.jpg' },
+    { videoId: 'hEJnMQG9ev8', title: 'Mad Max: Fury Road', category: 'Action', year: 2015, rating: 8.1, thumb: 'https://img.youtube.com/vi/hEJnMQG9ev8/mqdefault.jpg' },
+    { videoId: 'qEVUtrk8_B4', title: 'John Wick: Chapter 4', category: 'Action', year: 2023, rating: 7.7, thumb: 'https://img.youtube.com/vi/qEVUtrk8_B4/mqdefault.jpg' },
+    { videoId: 'v4yLeNt-kCU', title: 'Chainsaw Man — Official Feature', category: 'Anime', year: 2022, rating: 8.5, thumb: 'https://img.youtube.com/vi/v4yLeNt-kCU/mqdefault.jpg' },
+    { videoId: 'Poo5lqoWSGw', title: 'One-Punch Man Opening Feature', category: 'Anime', year: 2015, rating: 8.7, thumb: 'https://img.youtube.com/vi/Poo5lqoWSGw/mqdefault.jpg' },
+    { videoId: '1ZdlAg3j8nI', title: 'Bleach: Thousand-Year Blood War', category: 'Anime', year: 2022, rating: 9.0, thumb: 'https://img.youtube.com/vi/1ZdlAg3j8nI/mqdefault.jpg' },
+    { videoId: 'Way9Dexny3w', title: 'Dune: Part Two', category: 'Sci-Fi', year: 2024, rating: 8.6, thumb: 'https://img.youtube.com/vi/Way9Dexny3w/mqdefault.jpg' },
+    { videoId: '6ZfuNTqbHE8', title: 'Avengers: Infinity War', category: 'Action', year: 2018, rating: 8.4, thumb: 'https://img.youtube.com/vi/6ZfuNTqbHE8/mqdefault.jpg' },
+    { videoId: '5xH0HfJHsaY', title: 'Parasite', category: 'Thriller', year: 2019, rating: 8.5, thumb: 'https://img.youtube.com/vi/5xH0HfJHsaY/mqdefault.jpg' },
+    { videoId: 'sY1S34973zA', title: 'The Godfather', category: 'Thriller', year: 1972, rating: 9.2, thumb: 'https://img.youtube.com/vi/sY1S34973zA/mqdefault.jpg' },
+    { videoId: 'pBk4NYhWNMM', title: 'The Grand Budapest Hotel', category: 'Comedy', year: 2014, rating: 8.1, thumb: 'https://img.youtube.com/vi/pBk4NYhWNMM/mqdefault.jpg' }
+];
+
+// Typo-tolerant Fuzzy Matching Score (Subsequence + Bigram Dice Coefficient)
+function fuzzyScore(str, pattern) {
+    if (!pattern) return 1;
+    const s = str.toLowerCase();
+    const p = pattern.toLowerCase();
+    if (s.includes(p)) return 1.0;
+
+    // Subsequence check
+    let pIdx = 0;
+    for (let i = 0; i < s.length && pIdx < p.length; i++) {
+        if (s[i] === p[pIdx]) pIdx++;
+    }
+    if (pIdx === p.length) return 0.8;
+
+    // Bigram overlap for transposed/misspelled letters
+    const sBigrams = new Set();
+    for (let i = 0; i < s.length - 1; i++) sBigrams.add(s.slice(i, i + 2));
+    let matches = 0;
+    for (let i = 0; i < p.length - 1; i++) {
+        if (sBigrams.has(p.slice(i, i + 2))) matches++;
+    }
+    return p.length > 1 ? matches / (p.length - 1) : 0;
+}
 
 function generatePartyId(prefix = 'PTY') {
     return `${prefix}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -57,7 +99,6 @@ async function persistParty(partyId) {
     }
 }
 
-// Push finished/replaced video onto LIFO Watch History Stack (avoiding consecutive duplicates)
 function pushToHistory(party) {
     if (!party || !party.videoId) return;
     if (!Array.isArray(party.history)) party.history = [];
@@ -87,8 +128,7 @@ async function buildDashboardPayload(userId) {
             isPublic: p.isPublic,
             activeCount: activeCount,
             isActive: activeCount > 0,
-            myRole: roleMap[p.partyId] || (Number(p.ownerUserId) === Number(userId) ? 'owner' : null),
-            videoTitle: p.videoTitle || 'Ready to Watch'
+            myRole: roleMap[p.partyId] || (Number(p.ownerUserId) === Number(userId) ? 'owner' : null)
         };
     });
 
@@ -109,11 +149,13 @@ async function broadcastDashboardUpdate() {
 function broadcastRoster(partyId) {
     const p = parties[partyId];
     if (!p) return;
-    io.to(partyId).emit('update_roster', Object.values(p.users));
+    const userList = Object.values(p.users);
+    const callCount = userList.filter(u => u.inCall).length;
+    io.to(partyId).emit('update_roster', { users: userList, callCount });
 }
 
 // ==========================================
-// 1. REST API: AUTH, SEARCH, PROFILES & CHUNKED VIDEO STREAMING
+// 1. REST API: AUTH, MOVIES, SEARCH, PROFILES & CHUNKED STREAMING
 // ==========================================
 app.post('/api/auth', async (req, res) => {
     try {
@@ -124,14 +166,14 @@ app.post('/api/auth', async (req, res) => {
         const existing = await db.findUserByUsername(cleanUser);
 
         if (mode === 'register') {
-            if (existing) return res.status(400).json({ error: 'Username already taken. Please Login.' });
+            if (existing) return res.status(400).json({ error: 'Username already taken. Please Sign In.' });
             const hash = await bcrypt.hash(password, 10);
             const newUser = await db.createUser(cleanUser, hash, null);
             const token = jwt.sign({ userId: newUser.id, username: newUser.username }, JWT_SECRET, { expiresIn: '7d' });
             return res.json({ token, userId: newUser.id, username: newUser.username });
         } else {
             if (!existing || !(await bcrypt.compare(password, existing.password_hash))) {
-                return res.status(401).json({ error: 'Invalid username or password.' });
+                return res.status(401).json({ error: 'Invalid credentials.' });
             }
             const token = jwt.sign({ userId: existing.id, username: existing.username }, JWT_SECRET, { expiresIn: '7d' });
             return res.json({ token, userId: existing.id, username: existing.username });
@@ -141,7 +183,28 @@ app.post('/api/auth', async (req, res) => {
     }
 });
 
-// Stream-Pipe Upload for Local Video Files (Zero RAM overhead, supports multi-GB files)
+// Movie Recommendations with Category, Rating Filter & Fuzzy Search
+app.get('/api/movies', (req, res) => {
+    const category = req.query.category || 'All';
+    const minRating = parseFloat(req.query.minRating) || 0;
+    const query = (req.query.q || '').trim();
+
+    let results = CURATED_MOVIES.filter(m => {
+        if (category !== 'All' && m.category.toLowerCase() !== category.toLowerCase()) return false;
+        if (m.rating < minRating) return false;
+        return true;
+    });
+
+    if (query) {
+        results = results
+            .map(m => ({ ...m, score: Math.max(fuzzyScore(m.title, query), fuzzyScore(m.category, query)) }))
+            .filter(m => m.score >= 0.42)
+            .sort((a, b) => b.score - a.score);
+    }
+
+    res.json(results);
+});
+
 app.post('/api/upload-local', (req, res) => {
     const rawName = req.headers['x-file-name'] || 'movie.mp4';
     const safeExt = path.extname(decodeURIComponent(rawName)).replace(/[^a-zA-Z0-9.]/g, '') || '.mp4';
@@ -154,24 +217,20 @@ app.post('/api/upload-local', (req, res) => {
     writeStream.on('finish', () => {
         res.json({
             streamUrl: `/api/stream/${filename}`,
-            title: `💻 ${decodeURIComponent(rawName)}`
+            title: decodeURIComponent(rawName)
         });
     });
 
-    writeStream.on('error', (err) => {
-        console.error('Upload Write Error:', err);
+    writeStream.on('error', () => {
         res.status(500).json({ error: 'Failed to stream local file to server' });
     });
 });
 
-// HTTP 206 Partial Content Byte-Range Video Streamer (Works identically to YouTube chunking)
 app.get('/api/stream/:filename', (req, res) => {
     const safeName = path.basename(req.params.filename);
     const filePath = path.join(UPLOADS_DIR, safeName);
 
-    if (!fs.existsSync(filePath)) {
-        return res.status(404).send('Video file not found');
-    }
+    if (!fs.existsSync(filePath)) return res.status(404).send('Video file not found');
 
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
@@ -184,7 +243,6 @@ app.get('/api/stream/:filename', (req, res) => {
     if (range) {
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
-        // Serve in 2MB chunks for smooth seeking & instant playback
         const CHUNK_SIZE = 2 * 1024 * 1024;
         const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + CHUNK_SIZE, fileSize - 1);
         const contentLength = (end - start) + 1;
@@ -213,7 +271,7 @@ app.get('/api/search', async (req, res) => {
         if (!q) return res.json({ parties: [], users: [] });
 
         const matchedParties = Object.values(parties)
-            .filter(p => p.partyName.toLowerCase().includes(q) || p.partyId.toLowerCase().includes(q))
+            .filter(p => fuzzyScore(p.partyName, q) >= 0.5 || p.partyId.toLowerCase().includes(q))
             .map(p => ({
                 partyId: p.partyId,
                 partyName: p.partyName,
@@ -262,18 +320,19 @@ app.get('/api/profile/:userId', async (req, res) => {
 });
 
 // ==========================================
-// 2. AUTHORITATIVE ELASTIC SYNC HEARTBEAT (Every 3 Seconds)
+// 2. AUTHORITATIVE ELASTIC SYNC HEARTBEAT (Every 2.5 Seconds)
 // ==========================================
 setInterval(() => {
     for (const [partyId, party] of Object.entries(parties)) {
         if (Object.keys(party.users).length > 0 && party.state === 'playing') {
             io.to(partyId).emit('sync_heartbeat', {
                 state: party.state,
-                time: getCurrentPartyTime(party)
+                time: getCurrentPartyTime(party),
+                serverTimestamp: Date.now()
             });
         }
     }
-}, 3000);
+}, 2500);
 
 // ==========================================
 // 3. SOCKET.IO REAL-TIME ENGINE
@@ -311,6 +370,9 @@ async function admitUserToParty(targetSocket, partyId, defaultRole = ROLES.MEMBE
         inCall: false
     };
 
+    const userList = Object.values(party.users);
+    const callCount = userList.filter(u => u.inCall).length;
+
     targetSocket.emit('party_joined', {
         partyId: party.partyId,
         partyName: party.partyName,
@@ -325,7 +387,9 @@ async function admitUserToParty(targetSocket, partyId, defaultRole = ROLES.MEMBE
         time: getCurrentPartyTime(party),
         queue: party.queue,
         history: party.history || [],
-        chatHistory: party.chatHistory
+        chatHistory: party.chatHistory,
+        activePoll: party.activePoll || null,
+        callCount
     });
 
     broadcastRoster(partyId);
@@ -361,6 +425,7 @@ async function handleLeaveParty(socket) {
             remainingUsers.sort((a, b) => ROLE_LEVEL[b.role] - ROLE_LEVEL[a.role]);
             const nextInLine = remainingUsers[0];
             nextInLine.role = ROLES.OWNER;
+            party.ownerUserId = nextInLine.userId;
             await db.setUserRole(partyId, nextInLine.userId, ROLES.OWNER);
             io.to(nextInLine.id).emit('role_updated', ROLES.OWNER);
         }
@@ -373,12 +438,17 @@ async function handleLeaveParty(socket) {
 
 io.on('connection', (socket) => {
 
+    // High-Precision Latency & Telemetry Ping
+    socket.on('latency_ping', (clientSentTime) => {
+        socket.emit('latency_pong', clientSentTime);
+    });
+
     socket.on('authenticate', async (token) => {
         try {
             const decoded = jwt.verify(token, JWT_SECRET);
             const userInDb = await db.findUserByUsername(decoded.username);
             if (!userInDb || userInDb.id !== decoded.userId) {
-                return socket.emit('auth_error', 'Account not found. Please log in again.');
+                return socket.emit('auth_error', 'Account not found. Please sign in again.');
             }
             socket.userId = userInDb.id;
             socket.username = userInDb.username;
@@ -392,11 +462,12 @@ io.on('connection', (socket) => {
             socket.emit('auth_success', {
                 userId: userInDb.id,
                 username: userInDb.username,
+                createdAt: userInDb.created_at,
                 parties: dashboardParties,
                 friends
             });
         } catch (err) {
-            socket.emit('auth_error', 'Session expired. Please log in again.');
+            socket.emit('auth_error', 'Session expired. Please sign in again.');
         }
     });
 
@@ -428,6 +499,7 @@ io.on('connection', (socket) => {
             queue: [],
             history: [],
             chatHistory: [],
+            activePoll: null,
             lastQueuePop: 0,
             users: {}
         };
@@ -474,7 +546,7 @@ io.on('connection', (socket) => {
             moderators.sort((a, b) => ROLE_LEVEL[b.role] - ROLE_LEVEL[a.role]);
             const approver = moderators[0];
 
-            socket.emit('party_notice', `Knock sent! Waiting for ${approver.username} to approve...`);
+            socket.emit('party_notice', `Access request sent to ${approver.username}...`);
             io.to(approver.id).emit('knock_request', {
                 requesterId: socket.id,
                 requesterUserId: socket.userId,
@@ -556,6 +628,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // RBAC Moderation + Explicit Manual Host Transfer
     socket.on('moderate_user', async ({ targetId, action, newRole }) => {
         const party = parties[socket.partyId];
         if (!party) return;
@@ -564,8 +637,31 @@ io.on('connection', (socket) => {
         const target = party.users[targetId];
         if (!actor || !target || socket.id === targetId) return;
 
-        if (ROLE_LEVEL[actor.role] < ROLE_LEVEL.ADMIN || ROLE_LEVEL[actor.role] <= ROLE_LEVEL[target.role]) return;
         const targetSocket = io.sockets.sockets.get(targetId);
+
+        // Explicit Host Transfer (Owner Only)
+        if (action === 'transfer_ownership') {
+            if (actor.role !== ROLES.OWNER) return;
+            actor.role = ROLES.ADMIN;
+            target.role = ROLES.OWNER;
+            party.ownerUserId = target.userId;
+
+            await db.setUserRole(socket.partyId, actor.userId, ROLES.ADMIN);
+            await db.setUserRole(socket.partyId, target.userId, ROLES.OWNER);
+            await persistParty(socket.partyId);
+
+            socket.emit('role_updated', ROLES.ADMIN);
+            if (targetSocket) targetSocket.emit('role_updated', ROLES.OWNER);
+            io.to(socket.partyId).emit('chat_message', {
+                sender: 'System',
+                text: `${actor.username} transferred party ownership to ${target.username}.`,
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            });
+            broadcastRoster(socket.partyId);
+            return;
+        }
+
+        if (ROLE_LEVEL[actor.role] < ROLE_LEVEL.ADMIN || ROLE_LEVEL[actor.role] <= ROLE_LEVEL[target.role]) return;
 
         switch (action) {
             case 'set_role':
@@ -607,28 +703,34 @@ io.on('connection', (socket) => {
         broadcastRoster(socket.partyId);
     });
 
-    // VIDEO SYNCING, STACK HISTORY & PREVIOUS VIDEO REPLAY
-    socket.on('play_video', async (time) => {
+    // VIDEO SYNCING (With Propagation Latency Timestamp)
+    socket.on('play_video', async ( payload ) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
+        const time = typeof payload === 'object' ? Number(payload.time) : Number(payload);
+        const sentAt = typeof payload === 'object' ? payload.sentAt : Date.now();
+
         party.state = 'playing';
-        party.time = Number(time) || 0;
+        party.time = time || 0;
         party.lastUpdate = Date.now();
-        socket.to(socket.partyId).emit('sync_play', party.time);
+        socket.to(socket.partyId).emit('sync_play', { time: party.time, sentAt });
         await persistParty(socket.partyId);
     });
 
-    socket.on('pause_video', async (time) => {
+    socket.on('pause_video', async ( payload ) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
+        const time = typeof payload === 'object' ? Number(payload.time) : Number(payload);
+        const sentAt = typeof payload === 'object' ? payload.sentAt : Date.now();
+
         party.state = 'paused';
-        party.time = Number(time) || 0;
+        party.time = time || 0;
         party.lastUpdate = Date.now();
-        socket.to(socket.partyId).emit('sync_pause', party.time);
+        socket.to(socket.partyId).emit('sync_pause', { time: party.time, sentAt });
         await persistParty(socket.partyId);
     });
 
@@ -637,12 +739,11 @@ io.on('connection', (socket) => {
         const user = party?.users[socket.id];
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.CURATOR) return;
 
-        // Push current video onto LIFO Watch History stack before switching
         pushToHistory(party);
 
-        party.videoSource = videoSource; // 'youtube' | 'url'
+        party.videoSource = videoSource;
         party.videoId = videoId;
-        party.videoTitle = videoTitle || 'Custom Media Stream';
+        party.videoTitle = videoTitle || 'Media Stream';
         party.time = 0;
         party.state = 'playing';
         party.lastUpdate = Date.now();
@@ -656,25 +757,21 @@ io.on('connection', (socket) => {
         io.to(socket.partyId).emit('update_history', party.history);
     });
 
-    // Requirement 1 & 2: Watch Previous Video (LIFO Stack Pop + Deduplicate Queue + Unshift to Front)
     socket.on('previous_video', async (targetHistoryIndex = null) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
-        // Strictly restrict to Admins and Owners
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
         if (!party.history || party.history.length === 0) return;
 
-        // 1. Take current video, remove any duplicate of it from the back of the queue, and push to FRONT of queue
         if (party.videoId) {
             party.queue = party.queue.filter(q => q.videoId !== party.videoId);
             party.queue.unshift({
                 videoSource: party.videoSource || 'youtube',
                 videoId: party.videoId,
-                title: party.videoTitle || 'Previous Current Video'
+                title: party.videoTitle || 'Video'
             });
         }
 
-        // 2. Pop from top of LIFO stack (or specific index if clicked from History list)
         let prevVideo;
         if (typeof targetHistoryIndex === 'number' && party.history[targetHistoryIndex]) {
             prevVideo = party.history.splice(targetHistoryIndex, 1)[0];
@@ -682,7 +779,6 @@ io.on('connection', (socket) => {
             prevVideo = party.history.pop();
         }
 
-        // Also remove any duplicate of prevVideo from the back of the queue
         party.queue = party.queue.filter(q => q.videoId !== prevVideo.videoId);
 
         party.videoSource = prevVideo.videoSource || 'youtube';
@@ -726,7 +822,7 @@ io.on('connection', (socket) => {
                         const vidId = ytData.items?.[0]?.id?.videoId || '8hP9D6kZseM';
                         results.push({
                             videoId: vidId,
-                            title: `🎬 ${m.title} (${(m.release_date || 'N/A').slice(0, 4)}) - ★ ${m.vote_average || 'N/A'}`,
+                            title: `${m.title} (${(m.release_date || 'N/A').slice(0, 4)}) • ★ ${m.vote_average || 'N/A'}`,
                             thumb: m.poster_path ? `https://image.tmdb.org/t/p/w200${m.poster_path}` : (ytData.items?.[0]?.snippet?.thumbnails?.default?.url || '')
                         });
                     }
@@ -741,7 +837,7 @@ io.on('connection', (socket) => {
             if (data.items) {
                 const formatted = data.items.map(item => ({
                     videoId: item.id.videoId,
-                    title: isTmdb ? `🎬 [TMDB] ${item.snippet.title}` : item.snippet.title,
+                    title: item.snippet.title,
                     thumb: item.snippet.thumbnails.default.url
                 }));
                 socket.emit('search_results', formatted);
@@ -820,6 +916,58 @@ io.on('connection', (socket) => {
         }
     });
 
+    // LIVE FLOATING REACTIONS
+    socket.on('send_reaction', (reactionType) => {
+        const party = parties[socket.partyId];
+        if (!party) return;
+        io.to(socket.partyId).emit('party_reaction', {
+            reaction: reactionType,
+            sender: socket.username
+        });
+    });
+
+    // LIVE GROUP POLLS
+    socket.on('create_poll', ({ question, options }) => {
+        const party = parties[socket.partyId];
+        const user = party?.users[socket.id];
+        if (!party || !user || !question || !Array.isArray(options) || options.length < 2) return;
+
+        party.activePoll = {
+            id: crypto.randomBytes(4).toString('hex'),
+            creator: user.username,
+            question: String(question).slice(0, 140),
+            options: options.slice(0, 4).map(opt => ({ text: String(opt).slice(0, 80), votes: 0 })),
+            voters: {}
+        };
+        io.to(socket.partyId).emit('poll_updated', party.activePoll);
+    });
+
+    socket.on('vote_poll', (optionIndex) => {
+        const party = parties[socket.partyId];
+        const poll = party?.activePoll;
+        if (!party || !poll || !socket.userId) return;
+
+        const prevVote = poll.voters[socket.userId];
+        if (typeof prevVote === 'number' && poll.options[prevVote]) {
+            poll.options[prevVote].votes = Math.max(0, poll.options[prevVote].votes - 1);
+        }
+
+        if (poll.options[optionIndex]) {
+            poll.options[optionIndex].votes += 1;
+            poll.voters[socket.userId] = optionIndex;
+            io.to(socket.partyId).emit('poll_updated', poll);
+        }
+    });
+
+    socket.on('close_poll', () => {
+        const party = parties[socket.partyId];
+        const user = party?.users[socket.id];
+        if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
+        party.activePoll = null;
+        io.to(socket.partyId).emit('poll_updated', null);
+    });
+
+    // LIVE CHAT
     socket.on('chat_message', async (text) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -838,6 +986,7 @@ io.on('connection', (socket) => {
         await persistParty(socket.partyId);
     });
 
+    // WEBRTC VIDEO CALL SIGNALING
     socket.on('join_video_call', (peerId) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -893,6 +1042,7 @@ async function startServer() {
                 queue: Array.isArray(p.queue_json) ? p.queue_json : [],
                 history: Array.isArray(p.history_json) ? p.history_json : [],
                 chatHistory: Array.isArray(p.chat_json) ? p.chat_json : [],
+                activePoll: null,
                 lastQueuePop: 0,
                 users: {}
             };
