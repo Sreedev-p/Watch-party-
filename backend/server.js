@@ -4,12 +4,19 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'watch-party-super-secret-key-2026';
+
+// Ensure local chunked media uploads folder exists
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 const app = express();
 app.use(cors());
@@ -22,9 +29,7 @@ const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } 
 const ROLES = { MEMBER: 'member', CURATOR: 'curator', ADMIN: 'admin', OWNER: 'owner' };
 const ROLE_LEVEL = { member: 1, curator: 2, admin: 3, owner: 4 };
 
-// In-Memory Write-Through State: partyId -> Party Object
 const parties = {};
-// Track online users by userId -> Set of socket.ids (for instant Friend Invites!)
 const onlineUsers = {};
 
 function generatePartyId(prefix = 'PTY') {
@@ -52,7 +57,21 @@ async function persistParty(partyId) {
     }
 }
 
-// Compile dashboard summary for a specific user
+// Push finished/replaced video onto LIFO Watch History Stack (avoiding consecutive duplicates)
+function pushToHistory(party) {
+    if (!party || !party.videoId) return;
+    if (!Array.isArray(party.history)) party.history = [];
+    const top = party.history[party.history.length - 1];
+    if (!top || top.videoId !== party.videoId) {
+        party.history.push({
+            videoSource: party.videoSource || 'youtube',
+            videoId: party.videoId,
+            title: party.videoTitle || 'Watched Video'
+        });
+        if (party.history.length > 50) party.history.shift();
+    }
+}
+
 async function buildDashboardPayload(userId) {
     const memberships = userId ? await db.getAllMembershipsForUser(userId) : [];
     const roleMap = {};
@@ -73,7 +92,6 @@ async function buildDashboardPayload(userId) {
         };
     });
 
-    // Sort globally by active users first, then newest
     allPartiesList.sort((a, b) => b.activeCount - a.activeCount);
     return allPartiesList;
 }
@@ -95,7 +113,7 @@ function broadcastRoster(partyId) {
 }
 
 // ==========================================
-// 1. REST API: AUTH, SEARCH & PROFILES
+// 1. REST API: AUTH, SEARCH, PROFILES & CHUNKED VIDEO STREAMING
 // ==========================================
 app.post('/api/auth', async (req, res) => {
     try {
@@ -119,12 +137,76 @@ app.post('/api/auth', async (req, res) => {
             return res.json({ token, userId: existing.id, username: existing.username });
         }
     } catch (err) {
-        console.error('Auth error:', err);
         res.status(500).json({ error: 'Server error during authentication.' });
     }
 });
 
-// Universal Search (Parties by Name/ID + Users by Username)
+// Stream-Pipe Upload for Local Video Files (Zero RAM overhead, supports multi-GB files)
+app.post('/api/upload-local', (req, res) => {
+    const rawName = req.headers['x-file-name'] || 'movie.mp4';
+    const safeExt = path.extname(decodeURIComponent(rawName)).replace(/[^a-zA-Z0-9.]/g, '') || '.mp4';
+    const filename = `local-${Date.now()}-${crypto.randomBytes(3).toString('hex')}${safeExt}`;
+    const filePath = path.join(UPLOADS_DIR, filename);
+
+    const writeStream = fs.createWriteStream(filePath);
+    req.pipe(writeStream);
+
+    writeStream.on('finish', () => {
+        res.json({
+            streamUrl: `/api/stream/${filename}`,
+            title: `💻 ${decodeURIComponent(rawName)}`
+        });
+    });
+
+    writeStream.on('error', (err) => {
+        console.error('Upload Write Error:', err);
+        res.status(500).json({ error: 'Failed to stream local file to server' });
+    });
+});
+
+// HTTP 206 Partial Content Byte-Range Video Streamer (Works identically to YouTube chunking)
+app.get('/api/stream/:filename', (req, res) => {
+    const safeName = path.basename(req.params.filename);
+    const filePath = path.join(UPLOADS_DIR, safeName);
+
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).send('Video file not found');
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    const ext = path.extname(safeName).toLowerCase();
+    const mimeTypes = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogg': 'video/ogg', '.mkv': 'video/x-matroska' };
+    const contentType = mimeTypes[ext] || 'video/mp4';
+
+    if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        // Serve in 2MB chunks for smooth seeking & instant playback
+        const CHUNK_SIZE = 2 * 1024 * 1024;
+        const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + CHUNK_SIZE, fileSize - 1);
+        const contentLength = (end - start) + 1;
+
+        res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': contentLength,
+            'Content-Type': contentType
+        });
+
+        fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+        res.writeHead(200, {
+            'Content-Length': fileSize,
+            'Content-Type': contentType,
+            'Accept-Ranges': 'bytes'
+        });
+        fs.createReadStream(filePath).pipe(res);
+    }
+});
+
 app.get('/api/search', async (req, res) => {
     try {
         const q = (req.query.q || '').trim().toLowerCase();
@@ -147,7 +229,6 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// Fetch Any User's Profile (Friends + Parties they belong to)
 app.get('/api/profile/:userId', async (req, res) => {
     try {
         const targetId = Number(req.params.userId);
@@ -181,13 +262,26 @@ app.get('/api/profile/:userId', async (req, res) => {
 });
 
 // ==========================================
-// 2. SOCKET.IO REAL-TIME ENGINE
+// 2. AUTHORITATIVE ELASTIC SYNC HEARTBEAT (Every 3 Seconds)
+// ==========================================
+setInterval(() => {
+    for (const [partyId, party] of Object.entries(parties)) {
+        if (Object.keys(party.users).length > 0 && party.state === 'playing') {
+            io.to(partyId).emit('sync_heartbeat', {
+                state: party.state,
+                time: getCurrentPartyTime(party)
+            });
+        }
+    }
+}, 3000);
+
+// ==========================================
+// 3. SOCKET.IO REAL-TIME ENGINE
 // ==========================================
 async function admitUserToParty(targetSocket, partyId, defaultRole = ROLES.MEMBER) {
     const party = parties[partyId];
     if (!party) return;
 
-    // Leave previous party if switching
     if (targetSocket.partyId && targetSocket.partyId !== partyId) {
         await handleLeaveParty(targetSocket);
     }
@@ -217,7 +311,6 @@ async function admitUserToParty(targetSocket, partyId, defaultRole = ROLES.MEMBE
         inCall: false
     };
 
-    // Send complete persistent party state (including last stopped timestamp & chat history!)
     targetSocket.emit('party_joined', {
         partyId: party.partyId,
         partyName: party.partyName,
@@ -231,6 +324,7 @@ async function admitUserToParty(targetSocket, partyId, defaultRole = ROLES.MEMBE
         state: party.state,
         time: getCurrentPartyTime(party),
         queue: party.queue,
+        history: party.history || [],
         chatHistory: party.chatHistory
     });
 
@@ -249,7 +343,6 @@ async function handleLeaveParty(socket) {
         socket.peerId = null;
     }
 
-    // Freeze current playback timestamp before removing user
     party.time = getCurrentPartyTime(party);
     party.lastUpdate = Date.now();
 
@@ -260,11 +353,9 @@ async function handleLeaveParty(socket) {
     const remainingUsers = Object.values(party.users);
 
     if (remainingUsers.length === 0) {
-        // Party survives emptiness! Pause playback and save exact timestamp to PostgreSQL
         party.state = 'paused';
         await persistParty(partyId);
     } else {
-        // Priority Succession if Owner leaves while others are still watching
         const hasOnlineOwner = remainingUsers.some(u => u.role === ROLES.OWNER);
         if (!hasOnlineOwner) {
             remainingUsers.sort((a, b) => ROLE_LEVEL[b.role] - ROLE_LEVEL[a.role]);
@@ -282,7 +373,6 @@ async function handleLeaveParty(socket) {
 
 io.on('connection', (socket) => {
 
-    // 1. AUTHENTICATE & LOAD DASHBOARD
     socket.on('authenticate', async (token) => {
         try {
             const decoded = jwt.verify(token, JWT_SECRET);
@@ -316,7 +406,6 @@ io.on('connection', (socket) => {
         socket.emit('dashboard_data', payload);
     });
 
-    // 2. CREATE PARTY & QUICK PARTY
     socket.on('create_party', async ({ partyName, isPublic, isQuick, invitedFriendIds }) => {
         if (!socket.userId) return;
 
@@ -337,6 +426,7 @@ io.on('connection', (socket) => {
             time: 0,
             lastUpdate: Date.now(),
             queue: [],
+            history: [],
             chatHistory: [],
             lastQueuePop: 0,
             users: {}
@@ -346,7 +436,6 @@ io.on('connection', (socket) => {
         await db.setUserRole(partyId, socket.userId, ROLES.OWNER);
         await admitUserToParty(socket, partyId, ROLES.OWNER);
 
-        // Send live invites to selected friends
         if (Array.isArray(invitedFriendIds)) {
             for (const fid of invitedFriendIds) {
                 await db.setUserRole(partyId, Number(fid), ROLES.MEMBER);
@@ -364,7 +453,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. JOIN PARTY (Public OR Existing Member OR Knock)
     socket.on('join_party', async ({ partyId }) => {
         if (!socket.userId) return;
         const cleanId = (partyId || '').trim().toUpperCase();
@@ -374,11 +462,9 @@ io.on('connection', (socket) => {
         const isOwner = Number(party.ownerUserId) === Number(socket.userId);
         const savedRole = await db.getUserRole(cleanId, socket.userId);
 
-        // Public party OR already a member of this private party -> Enter immediately!
         if (party.isPublic || isOwner || savedRole) {
             await admitUserToParty(socket, cleanId, ROLES.MEMBER);
         } else {
-            // Private party & not a member yet -> Request Owner/Admin permission
             const activeUsers = Object.values(party.users);
             const moderators = activeUsers.filter(u => ROLE_LEVEL[u.role] >= ROLE_LEVEL.ADMIN);
 
@@ -419,7 +505,6 @@ io.on('connection', (socket) => {
         socket.emit('dashboard_data', payload);
     });
 
-    // 4. DELETE PARTY (Owner Only)
     socket.on('delete_party', async ({ partyId }) => {
         const party = parties[partyId];
         if (!party || Number(party.ownerUserId) !== Number(socket.userId)) {
@@ -438,7 +523,6 @@ io.on('connection', (socket) => {
         await broadcastDashboardUpdate();
     });
 
-    // 5. FRIENDS & LIVE PARTY INVITES
     socket.on('add_friend', async (friendUserId) => {
         if (!socket.userId) return;
         await db.addFriend(socket.userId, Number(friendUserId));
@@ -458,7 +542,6 @@ io.on('connection', (socket) => {
         const actor = party?.users[socket.id];
         if (!party || !actor || ROLE_LEVEL[actor.role] < ROLE_LEVEL.ADMIN) return;
 
-        // Pre-authorize friend in party_roles so they bypass knocking!
         await db.setUserRole(party.partyId, Number(friendUserId), ROLES.MEMBER);
 
         const friendSockets = onlineUsers[Number(friendUserId)];
@@ -473,7 +556,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. RBAC MODERATION
     socket.on('moderate_user', async ({ targetId, action, newRole }) => {
         const party = parties[socket.partyId];
         if (!party) return;
@@ -525,7 +607,7 @@ io.on('connection', (socket) => {
         broadcastRoster(socket.partyId);
     });
 
-    // 7. MULTI-SOURCE MEDIA SYNC (YouTube, TMDB, Direct URL, Local File Stream)
+    // VIDEO SYNCING, STACK HISTORY & PREVIOUS VIDEO REPLAY
     socket.on('play_video', async (time) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -550,12 +632,15 @@ io.on('connection', (socket) => {
         await persistParty(socket.partyId);
     });
 
-    socket.on('change_media_source', async ({ videoSource, videoId, videoTitle, streamPeerId }) => {
+    socket.on('change_media_source', async ({ videoSource, videoId, videoTitle }) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.CURATOR) return;
 
-        party.videoSource = videoSource; // 'youtube' | 'url' | 'local'
+        // Push current video onto LIFO Watch History stack before switching
+        pushToHistory(party);
+
+        party.videoSource = videoSource; // 'youtube' | 'url'
         party.videoId = videoId;
         party.videoTitle = videoTitle || 'Custom Media Stream';
         party.time = 0;
@@ -566,12 +651,58 @@ io.on('connection', (socket) => {
         io.to(socket.partyId).emit('load_new_media', {
             videoSource: party.videoSource,
             videoId: party.videoId,
-            videoTitle: party.videoTitle,
-            streamPeerId: streamPeerId || null
+            videoTitle: party.videoTitle
         });
+        io.to(socket.partyId).emit('update_history', party.history);
     });
 
-    // 8. SEARCH (YOUTUBE + TMDB MOVIES) & QUEUE
+    // Requirement 1 & 2: Watch Previous Video (LIFO Stack Pop + Deduplicate Queue + Unshift to Front)
+    socket.on('previous_video', async (targetHistoryIndex = null) => {
+        const party = parties[socket.partyId];
+        const user = party?.users[socket.id];
+        // Strictly restrict to Admins and Owners
+        if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
+        if (!party.history || party.history.length === 0) return;
+
+        // 1. Take current video, remove any duplicate of it from the back of the queue, and push to FRONT of queue
+        if (party.videoId) {
+            party.queue = party.queue.filter(q => q.videoId !== party.videoId);
+            party.queue.unshift({
+                videoSource: party.videoSource || 'youtube',
+                videoId: party.videoId,
+                title: party.videoTitle || 'Previous Current Video'
+            });
+        }
+
+        // 2. Pop from top of LIFO stack (or specific index if clicked from History list)
+        let prevVideo;
+        if (typeof targetHistoryIndex === 'number' && party.history[targetHistoryIndex]) {
+            prevVideo = party.history.splice(targetHistoryIndex, 1)[0];
+        } else {
+            prevVideo = party.history.pop();
+        }
+
+        // Also remove any duplicate of prevVideo from the back of the queue
+        party.queue = party.queue.filter(q => q.videoId !== prevVideo.videoId);
+
+        party.videoSource = prevVideo.videoSource || 'youtube';
+        party.videoId = prevVideo.videoId;
+        party.videoTitle = prevVideo.title;
+        party.time = 0;
+        party.state = 'playing';
+        party.lastUpdate = Date.now();
+
+        await persistParty(socket.partyId);
+
+        io.to(socket.partyId).emit('load_new_media', {
+            videoSource: party.videoSource,
+            videoId: party.videoId,
+            videoTitle: party.videoTitle
+        });
+        io.to(socket.partyId).emit('update_queue', party.queue);
+        io.to(socket.partyId).emit('update_history', party.history);
+    });
+
     socket.on('search_media', async ({ query, source }) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -581,7 +712,6 @@ io.on('connection', (socket) => {
             let searchQuery = query;
             let isTmdb = (source === 'tmdb');
 
-            // If user has a TMDB_API_KEY configured, fetch official TMDB movie metadata first
             if (isTmdb && process.env.TMDB_API_KEY) {
                 const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(query)}`;
                 const tmdbRes = await fetch(tmdbUrl);
@@ -590,7 +720,6 @@ io.on('connection', (socket) => {
                     const topMovies = tmdbData.results.slice(0, 5);
                     const results = [];
                     for (const m of topMovies) {
-                        // Resolve playable YouTube trailer/full stream ID for the TMDB movie
                         const ytUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&q=${encodeURIComponent(m.title + ' ' + (m.release_date || '').slice(0, 4) + ' trailer')}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
                         const ytRes = await fetch(ytUrl);
                         const ytData = await ytRes.json();
@@ -605,7 +734,6 @@ io.on('connection', (socket) => {
                 }
             }
 
-            // Standard YouTube Search (or Automatic TMDB Fallback via YouTube Movie Search)
             if (isTmdb) searchQuery = `${query} official movie trailer`;
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(searchQuery)}&type=video&key=${process.env.YOUTUBE_API_KEY}`;
             const response = await fetch(url);
@@ -643,6 +771,8 @@ io.on('connection', (socket) => {
         if (!party || !user || ROLE_LEVEL[user.role] < ROLE_LEVEL.ADMIN) return;
 
         if (party.queue.length > 0) {
+            pushToHistory(party);
+
             const nextVideo = party.queue.shift();
             party.videoSource = nextVideo.videoSource || 'youtube';
             party.videoId = nextVideo.videoId;
@@ -659,6 +789,7 @@ io.on('connection', (socket) => {
                 videoTitle: party.videoTitle
             });
             io.to(socket.partyId).emit('update_queue', party.queue);
+            io.to(socket.partyId).emit('update_history', party.history);
         }
     });
 
@@ -667,6 +798,8 @@ io.on('connection', (socket) => {
         if (!party || Date.now() - party.lastQueuePop < 5000) return;
 
         if (party.queue.length > 0) {
+            pushToHistory(party);
+
             const nextVideo = party.queue.shift();
             party.videoSource = nextVideo.videoSource || 'youtube';
             party.videoId = nextVideo.videoId;
@@ -683,10 +816,10 @@ io.on('connection', (socket) => {
                 videoTitle: party.videoTitle
             });
             io.to(socket.partyId).emit('update_queue', party.queue);
+            io.to(socket.partyId).emit('update_history', party.history);
         }
     });
 
-    // 9. PERSISTENT LIVE CHAT
     socket.on('chat_message', async (text) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -705,7 +838,6 @@ io.on('connection', (socket) => {
         await persistParty(socket.partyId);
     });
 
-    // 10. WEBRTC VIDEO CALL SIGNALING
     socket.on('join_video_call', (peerId) => {
         const party = parties[socket.partyId];
         const user = party?.users[socket.id];
@@ -730,7 +862,6 @@ io.on('connection', (socket) => {
         broadcastRoster(socket.partyId);
     });
 
-    // 11. DISCONNECT
     socket.on('disconnect', async () => {
         if (socket.userId && onlineUsers[socket.userId]) {
             onlineUsers[socket.userId].delete(socket.id);
@@ -740,7 +871,7 @@ io.on('connection', (socket) => {
 });
 
 // ==========================================
-// 3. BOOT & HYDRATE FROM POSTGRESQL
+// 4. BOOT & HYDRATE FROM POSTGRESQL
 // ==========================================
 async function startServer() {
     try {
@@ -760,6 +891,7 @@ async function startServer() {
                 time: Number(p.last_time) || 0,
                 lastUpdate: Date.now(),
                 queue: Array.isArray(p.queue_json) ? p.queue_json : [],
+                history: Array.isArray(p.history_json) ? p.history_json : [],
                 chatHistory: Array.isArray(p.chat_json) ? p.chat_json : [],
                 lastQueuePop: 0,
                 users: {}

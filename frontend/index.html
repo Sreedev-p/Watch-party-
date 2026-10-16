@@ -25,7 +25,7 @@
         </div>
     </div>
 
-    <!-- 2. TOP NAVIGATION BAR (Visible on Dashboard & Party Views) -->
+    <!-- 2. TOP NAVIGATION BAR -->
     <nav id="top-navbar" style="display: none;">
         <div class="nav-left">
             <div class="brand-logo small" id="nav-logo" style="cursor:pointer;">⚡ Pulse<span>Party</span></div>
@@ -53,7 +53,6 @@
 
     <!-- 3. MAIN DASHBOARD VIEW -->
     <div id="dashboard-view" class="dashboard-grid" style="display: none;">
-        <!-- Left Sidebar: Toggle between My Parties & Global Top Parties -->
         <aside class="glass-panel sidebar-panel">
             <div class="sidebar-toggle-bar">
                 <button id="toggle-my-parties" class="toggle-btn active">My Parties</button>
@@ -62,9 +61,7 @@
             <div id="sidebar-party-list" class="scrollable-list"></div>
         </aside>
 
-        <!-- Main Workspace Area -->
         <main class="dashboard-main">
-            <!-- Quick Action Hero Cards -->
             <div class="hero-actions">
                 <div class="glass-card hero-card">
                     <div>
@@ -93,7 +90,6 @@
                 </div>
             </div>
 
-            <!-- Dynamic Content Sections (Home / Created by Me / Friends) -->
             <div id="dashboard-notice" class="alert-banner" style="display:none; margin-bottom: 15px;"></div>
 
             <section id="section-created-by-me" class="content-section">
@@ -119,7 +115,7 @@
         </main>
     </div>
 
-    <!-- 4. CREATE PARTY + FRIEND INVITE MODAL -->
+    <!-- 4. CREATE PARTY MODAL -->
     <div id="create-party-modal" class="modal-backdrop" style="display: none;">
         <div class="glass-card modal-box">
             <h3>✨ Create New Watch Party</h3>
@@ -176,6 +172,8 @@
             </div>
 
             <div class="row-gap">
+                <span id="sync-status-pill" class="meta-subtext" style="background:#161923; padding:5px 10px; border-radius:20px;">⚡ Sync: 1.00x</span>
+                <span id="now-playing-label" class="meta-subtext">Now Playing: Default</span>
                 <button id="btn-copy-party-id" class="btn-secondary">📋 Copy Party ID</button>
                 <button id="btn-delete-active-party" class="btn-danger-sm" style="display:none;">🗑️ Delete Party</button>
             </div>
@@ -190,63 +188,62 @@
                 <option value="youtube">▶ YouTube Search</option>
                 <option value="tmdb">🎬 TMDB Movie Search</option>
                 <option value="url">🔗 Direct Video URL (.mp4 / Web)</option>
-                <option value="local">💻 Stream Local Video File</option>
+                <option value="local">💻 Stream Local Video File (Chunked)</option>
             </select>
 
             <input type="text" id="media-search-input" class="modern-input flex-1" placeholder="Search YouTube or TMDB Movies...">
             <button id="btn-load-url" class="btn-accent" style="display:none;">Load Stream URL</button>
             <input type="file" id="local-file-input" accept="video/*" class="modern-input flex-1" style="display:none;">
+            <span id="upload-status" class="meta-subtext" style="display:none;">Uploading chunks...</span>
         </div>
 
         <div id="search-results"></div>
 
-        <!-- WebRTC Video Call Ribbon -->
-        <div id="video-call-bar" class="glass-panel">
-            <div class="row-between">
-                <div class="row-gap">
-                    <span style="font-weight:bold; font-size:13px;">📷 Party Voice & Video</span>
-                    <button id="btn-join-call" class="btn-accent btn-sm">Join Call</button>
-                    <button id="btn-toggle-mic" class="btn-secondary btn-sm" style="display:none;">🎤 Mute Mic</button>
-                    <button id="btn-toggle-cam" class="btn-secondary btn-sm" style="display:none;">📷 Hide Cam</button>
-                    <button id="btn-leave-call" class="btn-danger-sm" style="display:none;">Leave Call</button>
-                </div>
-                <span id="now-playing-label" class="meta-subtext">Now Playing: Default</span>
-            </div>
-            <div id="video-grid"></div>
-        </div>
-
         <!-- 3-Column Cinema Workspace: Video Player + Persistent Chat + RBAC & Invite Roster -->
         <div id="main-layout">
-            <!-- Left: Multi-Engine Video Player & Queue -->
+            <!-- Left: Multi-Engine Video Player, Queue & Watch History Stack -->
             <div class="player-column">
                 <div id="video-wrapper" class="glass-panel">
                     <div id="player-container">
                         <div id="player"></div>
-                        <video id="html5-player" style="display:none; width:100%; height:100%; background:#000;"></video>
-                        <div id="player-shield" title="Click to Play/Pause (Space)"></div>
+                        <video id="html5-player" playsinline style="display:none; width:100%; height:100%; background:#000;"></video>
+                        <div id="player-shield" title="Click to Play/Pause (Space) | Double-Click for Fullscreen (F)"></div>
                     </div>
 
                     <div id="custom-controls">
+                        <button id="btn-prev" class="icon-btn" title="Watch Previous Video (Admin/Owner Only)">⏮</button>
                         <button id="btn-play-pause" class="icon-btn" title="Play/Pause (Space)">▶</button>
                         <button id="btn-skip" class="icon-btn" title="Skip to Next in Queue">⏭</button>
                         <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1">
                         <span id="time-display">0:00 / 0:00</span>
                         <button id="btn-captions" class="icon-btn" title="Toggle Captions (C)">CC</button>
-                        <div class="control-group">
-                            <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">🔇</button>
-                            <input type="range" id="volume-slider" value="100" min="0" max="100">
+                        <div class="control-group row-gap">
+                            <button id="btn-mute" class="icon-btn" title="Mute/Unmute (M)">🔊</button>
+                            <input type="range" id="volume-slider" value="100" min="0" max="100" style="width:70px;">
                         </div>
+                        <button id="btn-theater" class="icon-btn" title="Theater Mode (T)">▭</button>
+                        <button id="btn-fullscreen" class="icon-btn" title="Fullscreen Mode (F)">⛶</button>
                     </div>
 
                     <div id="shortcut-hint">
-                        Shortcuts: <b>Space</b> Play/Pause | <b>←/→</b> Seek 5s | <b>↑/↓</b> Volume | <b>M</b> Mute | <b>C</b> Captions
+                        Shortcuts: <b>Space</b> Play/Pause | <b>←/→</b> Seek 5s | <b>↑/↓</b> Volume | <b>M</b> Mute | <b>C</b> Captions | <b>T</b> Theater | <b>F</b> Fullscreen
                     </div>
                 </div>
 
-                <!-- Persistent Up-Next Queue -->
-                <div id="queue-container" class="glass-panel">
-                    <h4 style="margin: 0 0 8px 0; font-size: 13px; color: #94a3b8;">🎵 Up Next in Party Queue</h4>
-                    <div id="queue-list" style="font-size: 13px; color: #cbd5e1;">Queue is empty.</div>
+                <!-- Dual Playlists: Up Next Queue + LIFO Watch History Stack -->
+                <div class="playlists-grid">
+                    <div id="queue-container" class="glass-panel">
+                        <h4 style="margin: 0 0 8px 0; font-size: 13px; color: #94a3b8;">🎵 Up Next in Queue</h4>
+                        <div id="queue-list" class="scrollable-list" style="max-height:120px; font-size: 13px; color: #cbd5e1;">Queue is empty.</div>
+                    </div>
+
+                    <div id="history-container" class="glass-panel">
+                        <div class="row-between" style="margin-bottom: 8px;">
+                            <h4 style="margin: 0; font-size: 13px; color: #94a3b8;">🕒 Watch History (LIFO Stack)</h4>
+                            <button id="btn-replay-last" class="mod-btn" title="Pop top of stack & replay">⏮ Replay Last</button>
+                        </div>
+                        <div id="history-list" class="scrollable-list" style="max-height:120px; font-size: 13px; color: #cbd5e1;">No videos watched yet.</div>
+                    </div>
                 </div>
             </div>
 
@@ -271,6 +268,28 @@
                 </div>
             </div>
         </div>
+
+        <!-- RIGHT-EDGE COLLAPSIBLE VERTICAL VIDEO CALL DRAWER (Requirements 4, 5, 6) -->
+        <!-- Left Arrow at Right-Edge Center: Only clicking this brings the video call onto the screen -->
+        <button id="call-drawer-open-tab" title="Open Video Call Bar">◀</button>
+
+        <aside id="call-drawer" class="collapsed">
+            <!-- Right Arrow in the center of the stripe: Clicking collapses the stripe to the right edge -->
+            <button id="call-drawer-close-tab" title="Collapse Video Call Bar">▶</button>
+
+            <div class="call-drawer-header">
+                <strong>📷 Party Call</strong>
+                <div class="call-drawer-controls">
+                    <button id="btn-join-call" class="btn-accent btn-sm">Join Call</button>
+                    <button id="btn-toggle-mic" class="btn-secondary btn-sm" style="display:none;">🎤</button>
+                    <button id="btn-toggle-cam" class="btn-secondary btn-sm" style="display:none;">📷</button>
+                    <button id="btn-leave-call" class="btn-danger-sm" style="display:none;">✕</button>
+                </div>
+            </div>
+
+            <!-- Vertically Stacked Video Tiles -->
+            <div id="video-grid"></div>
+        </aside>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>

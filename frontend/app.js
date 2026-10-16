@@ -4,13 +4,13 @@ const socket = io();
 let myUser = { userId: null, username: '' };
 let allServerParties = [];
 let myFriends = [];
-let sidebarFilter = 'my'; // 'my' | 'global'
+let sidebarFilter = 'my';
 
 // Active Party State
 const ROLE_LEVEL = { member: 1, curator: 2, admin: 3, owner: 4 };
 let currentParty = null;
 let myRole = 'member';
-let activeMediaSource = 'youtube'; // 'youtube' | 'url' | 'local'
+let activeMediaSource = 'youtube'; // 'youtube' | 'url'
 let isChatRestricted = false;
 let isServerCallMuted = false;
 let captionsEnabled = false;
@@ -21,11 +21,11 @@ const html5Player = document.getElementById('html5-player');
 let isSyncing = false;
 let syncFailsafe;
 let debounceTimer;
+let idleControlsTimer;
 
 // WebRTC State
 let myPeer = null;
 let myVideoStream = null;
-let localFilePeer = null;
 const activePeers = {};
 
 function blockEcho() {
@@ -110,7 +110,6 @@ function showDashboardView() {
     renderDashboard();
 }
 
-// Navbar Tabs
 document.querySelectorAll('.nav-tab').forEach(btn => {
     btn.onclick = () => {
         document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
@@ -255,7 +254,6 @@ function renderSidebarList() {
 function renderDashboard() {
     renderSidebarList();
 
-    // Created by Me
     const myCreatedGrid = document.getElementById('my-created-parties-grid');
     myCreatedGrid.innerHTML = '';
     const myCreated = allServerParties.filter(p => Number(p.ownerUserId) === Number(myUser.userId));
@@ -265,7 +263,6 @@ function renderDashboard() {
         myCreated.forEach(p => myCreatedGrid.appendChild(createPartyCardElement(p)));
     }
 
-    // All Server Parties
     const allGrid = document.getElementById('all-server-parties-grid');
     allGrid.innerHTML = '';
     if (allServerParties.length === 0) {
@@ -307,7 +304,6 @@ function renderFriendsSection() {
     });
 }
 
-// Universal Search Bar (Parties + Users)
 const globalSearchInput = document.getElementById('global-search-input');
 const globalSearchDropdown = document.getElementById('global-search-dropdown');
 
@@ -379,7 +375,6 @@ globalSearchInput.addEventListener('input', (e) => {
         });
 });
 
-// Profile Inspection Modal
 async function openProfileModal(targetUserId) {
     const res = await fetch(`/api/profile/${targetUserId}`);
     if (!res.ok) return;
@@ -478,7 +473,6 @@ document.getElementById('btn-direct-join').onclick = () => {
     if (id) socket.emit('join_party', { partyId: id });
 };
 
-// Live Toast Invitations
 socket.on('party_invite', ({ partyId, partyName, fromUsername }) => {
     const container = document.getElementById('invite-toast-container');
     const toast = document.createElement('div');
@@ -531,13 +525,13 @@ socket.on('party_joined', (data) => {
     document.getElementById('active-party-title').textContent = data.partyName;
     applyRolePermissions();
 
-    // Load Persistent Queue & Chat History
     renderQueue(data.queue || []);
+    renderHistory(data.history || []);
+
     const chatMessages = document.getElementById('chat-messages');
     chatMessages.innerHTML = '';
     (data.chatHistory || []).forEach(msg => appendChatMessage(msg));
 
-    // Load Media Source & Resume from Last Stopped Timestamp!
     loadMediaIntoPlayer(data.videoSource, data.videoId, data.videoTitle, data.time, data.state);
     renderPartyFriendInviter();
 });
@@ -574,9 +568,13 @@ function applyRolePermissions() {
     document.getElementById('btn-delete-active-party').style.display = isOwner ? 'inline-block' : 'none';
 
     const canCurate = ROLE_LEVEL[myRole] >= ROLE_LEVEL.curator;
+    const canAdmin = ROLE_LEVEL[myRole] >= ROLE_LEVEL.admin;
+
     document.getElementById('media-search-input').disabled = !canCurate;
-    document.getElementById('seek-bar').disabled = (ROLE_LEVEL[myRole] < ROLE_LEVEL.admin);
-    document.getElementById('live-invite-section').style.display = (ROLE_LEVEL[myRole] >= ROLE_LEVEL.admin) ? 'block' : 'none';
+    document.getElementById('seek-bar').disabled = !canAdmin;
+    document.getElementById('btn-prev').style.display = canAdmin ? 'inline-block' : 'none';
+    document.getElementById('btn-replay-last').style.display = canAdmin ? 'inline-block' : 'none';
+    document.getElementById('live-invite-section').style.display = canAdmin ? 'block' : 'none';
 }
 
 function renderPartyFriendInviter() {
@@ -617,7 +615,6 @@ socket.on('kicked_from_party', (reason) => {
     socket.emit('request_dashboard');
 });
 
-// Knock Requests
 socket.on('knock_request', ({ requesterId, username }) => {
     const container = document.getElementById('knock-container');
     const banner = document.createElement('div');
@@ -651,12 +648,12 @@ socket.on('knock_request', ({ requesterId, username }) => {
 });
 
 // ==========================================
-// 5. MULTI-SOURCE PLAYER (YouTube + HTML5 URL + Local File P2P)
+// 5. MULTI-SOURCE PLAYER, ELASTIC DRIFT SYNC & FULLSCREEN/IDLE CONTROLS
 // ==========================================
 window.onYouTubeIframeAPIReady = function() {
     player = new YT.Player('player', {
-        height: '360',
-        width: '640',
+        height: '100%',
+        width: '100%',
         videoId: '8hP9D6kZseM',
         playerVars: {
             'controls': 0, 'disablekb': 1, 'rel': 0, 'modestbranding': 1, 'iv_load_policy': 3, 'fs': 0
@@ -671,7 +668,48 @@ window.onYouTubeIframeAPIReady = function() {
     });
 };
 
-function loadMediaIntoPlayer(source, videoId, title, startTime = 0, playState = 'paused', streamPeerId = null) {
+html5Player.onended = () => socket.emit('video_ended');
+
+function setPlayerPlaybackRate(rate) {
+    if (activeMediaSource === 'youtube' && player && player.setPlaybackRate) {
+        player.setPlaybackRate(rate);
+    } else if (html5Player) {
+        html5Player.playbackRate = rate;
+    }
+    const pill = document.getElementById('sync-status-pill');
+    if (pill) {
+        pill.textContent = rate === 1 ? '⚡ Sync: Locked (1.00x)' : `⚡ Drift Syncing (${rate.toFixed(2)}x)`;
+        pill.style.color = rate === 1 ? '#10b981' : '#eab308';
+    }
+}
+
+// Requirement 7 & 8: Elastic Drift-Correction Heartbeat (No Abrupt Cuts!)
+socket.on('sync_heartbeat', ({ state, time }) => {
+    if (!currentParty || state !== 'playing') {
+        setPlayerPlaybackRate(1.0);
+        return;
+    }
+
+    const localTime = getActiveCurrentTime();
+    const drift = time - localTime; // Positive = viewer is behind; Negative = viewer is ahead
+    const absDrift = Math.abs(drift);
+
+    if (absDrift > 3.0) {
+        // Only perform a hard seek if someone's connection froze completely (> 3 seconds off)
+        if (activeMediaSource === 'youtube' && player.seekTo) player.seekTo(time, true);
+        else html5Player.currentTime = time;
+        setPlayerPlaybackRate(1.0);
+    } else if (absDrift > 0.25) {
+        // Gentle, unnoticeable speed adjustment (1.05x to catch up, 0.95x to slow down)
+        const subtleRate = drift > 0 ? 1.05 : 0.95;
+        setPlayerPlaybackRate(subtleRate);
+    } else {
+        // Within 0.25s -> Lock back to normal 1.0x speed
+        setPlayerPlaybackRate(1.0);
+    }
+});
+
+function loadMediaIntoPlayer(source, videoId, title, startTime = 0, playState = 'paused') {
     activeMediaSource = source || 'youtube';
     document.getElementById('now-playing-label').textContent = `Now Playing: ${title || videoId}`;
     const ytDiv = document.getElementById('player');
@@ -685,57 +723,52 @@ function loadMediaIntoPlayer(source, videoId, title, startTime = 0, playState = 
             blockEcho();
             player.loadVideoById(videoId, startTime);
             player.unMute();
-            if (playState === 'playing') player.playVideo();
-            else setTimeout(() => player.pauseVideo(), 400);
+            if (playState === 'playing') {
+                player.playVideo();
+                updatePlayPauseUI(true);
+            } else {
+                setTimeout(() => { player.pauseVideo(); updatePlayPauseUI(false); }, 400);
+            }
         }
-    } else if (activeMediaSource === 'url') {
+    } else {
+        // Both Direct URLs and Chunked Local Files (/api/stream/...) play via HTML5 Range Player!
         if (player && player.pauseVideo) player.pauseVideo();
         ytDiv.style.display = 'none';
         html5Player.style.display = 'block';
-        html5Player.srcObject = null;
         html5Player.src = videoId;
-        html5Player.currentTime = startTime || 0;
-        if (playState === 'playing') html5Player.play().catch(() => {});
-        else html5Player.pause();
-    } else if (activeMediaSource === 'local' && streamPeerId) {
-        // Receive WebRTC Local File Stream from Host
-        if (player && player.pauseVideo) player.pauseVideo();
-        ytDiv.style.display = 'none';
-        html5Player.style.display = 'block';
-
-        const viewerPeer = new Peer();
-        viewerPeer.on('open', () => {
-            const conn = viewerPeer.call(streamPeerId, createDummyMediaStream());
-            conn.on('stream', (remoteFileStream) => {
-                html5Player.srcObject = remoteFileStream;
+        html5Player.onloadedmetadata = () => {
+            if (startTime > 0 && Number.isFinite(html5Player.duration)) {
+                html5Player.currentTime = startTime;
+            }
+            if (playState === 'playing') {
                 html5Player.play().catch(() => {});
-            });
-        });
+                updatePlayPauseUI(true);
+            } else {
+                html5Player.pause();
+                updatePlayPauseUI(false);
+            }
+        };
     }
 }
 
-function createDummyMediaStream() {
-    const ctx = new AudioContext();
-    const dest = ctx.createMediaStreamDestination();
-    return dest.stream;
-}
-
 socket.on('load_new_media', (data) => {
-    loadMediaIntoPlayer(data.videoSource, data.videoId, data.videoTitle, 0, 'playing', data.streamPeerId);
+    loadMediaIntoPlayer(data.videoSource, data.videoId, data.videoTitle, 0, 'playing');
 });
 
-// Unified Player Controls
 function getActiveCurrentTime() {
     if (activeMediaSource === 'youtube') return (player && player.getCurrentTime) ? player.getCurrentTime() : 0;
     return html5Player.currentTime || 0;
 }
 
 function getActiveDuration() {
-    if (activeMediaSource === 'youtube') return (player && player.getDuration) ? player.getDuration() : 0;
-    return html5Player.duration || 0;
+    const raw = (activeMediaSource === 'youtube')
+        ? ((player && player.getDuration) ? player.getDuration() : 0)
+        : html5Player.duration;
+    return (Number.isFinite(raw) && raw > 0) ? raw : 0;
 }
 
 function formatTime(s) {
+    if (!Number.isFinite(s) || s < 0) return '0:00';
     const min = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
     return `${min}:${sec < 10 ? '0' : ''}${sec}`;
@@ -751,6 +784,8 @@ function updateProgressBar() {
     if (dur > 0) {
         document.getElementById('seek-bar').value = (cur / dur) * 100;
         document.getElementById('time-display').innerText = `${formatTime(cur)} / ${formatTime(dur)}`;
+    } else {
+        document.getElementById('time-display').innerText = `${formatTime(cur)} / --:--`;
     }
 }
 
@@ -770,7 +805,9 @@ function togglePlayPause() {
 
 function seekRelative(delta) {
     if (!canControlPlayback()) return;
-    const target = Math.max(0, Math.min(getActiveDuration(), getActiveCurrentTime() + delta));
+    const dur = getActiveDuration();
+    if (dur <= 0) return;
+    const target = Math.max(0, Math.min(dur, getActiveCurrentTime() + delta));
     if (activeMediaSource === 'youtube') player.seekTo(target, true);
     else html5Player.currentTime = target;
     socket.emit('play_video', target);
@@ -790,7 +827,7 @@ function changeVolume(delta) {
     const slider = document.getElementById('volume-slider');
     const nextVol = Math.max(0, Math.min(100, Number(slider.value) + delta));
     slider.value = nextVol;
-    if (activeMediaSource === 'youtube' && player) player.setVolume(nextVol);
+    if (activeMediaSource === 'youtube' && player && player.setVolume) player.setVolume(nextVol);
     html5Player.volume = nextVol / 100;
 }
 
@@ -808,21 +845,63 @@ function toggleCaptions() {
     }
 }
 
+// Requirement 3: Dual Fullscreen Modes (Theater + Monitor Fullscreen) & Auto-Hiding Idle Controls
+function toggleTheaterMode() {
+    document.getElementById('main-layout').classList.toggle('theater-mode');
+}
+
+function toggleFullscreenMode() {
+    const wrapper = document.getElementById('video-wrapper');
+    if (!document.fullscreenElement) {
+        wrapper.requestFullscreen().catch(() => {});
+    } else {
+        document.exitFullscreen().catch(() => {});
+    }
+}
+
+const videoWrapper = document.getElementById('video-wrapper');
+function resetIdleControlsTimer() {
+    videoWrapper.classList.remove('controls-idle');
+    clearTimeout(idleControlsTimer);
+    idleControlsTimer = setTimeout(() => {
+        videoWrapper.classList.add('controls-idle');
+    }, 2800);
+}
+videoWrapper.addEventListener('mousemove', resetIdleControlsTimer);
+videoWrapper.addEventListener('mouseleave', () => {
+    clearTimeout(idleControlsTimer);
+    videoWrapper.classList.remove('controls-idle');
+});
+
 document.getElementById('btn-play-pause').onclick = togglePlayPause;
 document.getElementById('player-shield').onclick = togglePlayPause;
+document.getElementById('player-shield').ondblclick = toggleFullscreenMode;
 document.getElementById('btn-mute').onclick = toggleMute;
 document.getElementById('btn-captions').onclick = toggleCaptions;
-document.getElementById('btn-skip').onclick = () => { if (canControlPlayback()) socket.emit('skip_video'); };
+document.getElementById('btn-theater').onclick = toggleTheaterMode;
+document.getElementById('btn-fullscreen').onclick = toggleFullscreenMode;
+
+document.getElementById('btn-prev').onclick = () => {
+    if (canControlPlayback()) socket.emit('previous_video');
+};
+document.getElementById('btn-replay-last').onclick = () => {
+    if (canControlPlayback()) socket.emit('previous_video');
+};
+document.getElementById('btn-skip').onclick = () => {
+    if (canControlPlayback()) socket.emit('skip_video');
+};
 
 document.getElementById('seek-bar').oninput = (e) => {
     if (!canControlPlayback()) return;
-    const target = (e.target.value / 100) * getActiveDuration();
+    const dur = getActiveDuration();
+    if (dur <= 0) return;
+    const target = (e.target.value / 100) * dur;
     if (activeMediaSource === 'youtube') player.seekTo(target, true);
     else html5Player.currentTime = target;
     socket.emit('play_video', target);
 };
 
-document.getElementById('volume-slider').oninput = (e) => changeVolume(0);
+document.getElementById('volume-slider').oninput = () => changeVolume(0);
 
 socket.on('sync_play', (time) => {
     blockEcho();
@@ -838,6 +917,7 @@ socket.on('sync_play', (time) => {
 
 socket.on('sync_pause', (time) => {
     blockEcho();
+    setPlayerPlaybackRate(1.0);
     if (activeMediaSource === 'youtube') {
         player.seekTo(time, true);
         player.pauseVideo();
@@ -852,6 +932,7 @@ window.addEventListener('keydown', (e) => {
     if (!currentParty) return;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
 
+    resetIdleControlsTimer();
     switch (e.code) {
         case 'Space': e.preventDefault(); togglePlayPause(); break;
         case 'ArrowRight': e.preventDefault(); seekRelative(5); break;
@@ -860,16 +941,19 @@ window.addEventListener('keydown', (e) => {
         case 'ArrowDown': e.preventDefault(); changeVolume(-10); break;
         case 'KeyM': e.preventDefault(); toggleMute(); break;
         case 'KeyC': e.preventDefault(); toggleCaptions(); break;
+        case 'KeyT': e.preventDefault(); toggleTheaterMode(); break;
+        case 'KeyF': e.preventDefault(); toggleFullscreenMode(); break;
     }
 });
 
 // ==========================================
-// 6. MEDIA SOURCE SWITCHER (YT / TMDB / URL / LOCAL FILE)
+// 6. MEDIA SOURCE SWITCHER & CHUNKED LOCAL FILE UPLOAD
 // ==========================================
 const mediaSourceSelect = document.getElementById('media-source-select');
 const mediaSearchInput = document.getElementById('media-search-input');
 const btnLoadUrl = document.getElementById('btn-load-url');
 const localFileInput = document.getElementById('local-file-input');
+const uploadStatus = document.getElementById('upload-status');
 
 mediaSourceSelect.onchange = () => {
     const mode = mediaSourceSelect.value;
@@ -917,34 +1001,38 @@ btnLoadUrl.onclick = () => {
     mediaSearchInput.value = '';
 };
 
-localFileInput.onchange = (e) => {
+// Stream Local File to Server for 206 Partial Content Chunked Delivery
+localFileInput.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    const fileUrl = URL.createObjectURL(file);
-    if (player && player.pauseVideo) player.pauseVideo();
-    document.getElementById('player').style.display = 'none';
-    html5Player.style.display = 'block';
-    html5Player.srcObject = null;
-    html5Player.src = fileUrl;
-    html5Player.play();
+    uploadStatus.style.display = 'inline-block';
+    uploadStatus.textContent = `Preparing chunked stream for "${file.name}"...`;
 
-    // Stream Local File to Party via WebRTC
-    if (localFilePeer) localFilePeer.destroy();
-    localFilePeer = new Peer();
-    localFilePeer.on('open', (streamPeerId) => {
-        socket.emit('change_media_source', {
-            videoSource: 'local',
-            videoId: file.name,
-            videoTitle: `💻 Local File: ${file.name}`,
-            streamPeerId
+    try {
+        const res = await fetch('/api/upload-local', {
+            method: 'POST',
+            headers: {
+                'x-file-name': encodeURIComponent(file.name),
+                'Content-Type': 'application/octet-stream'
+            },
+            body: file
         });
-    });
+        const data = await res.json();
+        uploadStatus.style.display = 'none';
+        localFileInput.value = '';
 
-    localFilePeer.on('call', (call) => {
-        const stream = html5Player.captureStream ? html5Player.captureStream() : html5Player.mozCaptureStream();
-        call.answer(stream);
-    });
+        if (data.streamUrl) {
+            socket.emit('change_media_source', {
+                videoSource: 'url',
+                videoId: data.streamUrl,
+                videoTitle: data.title
+            });
+        }
+    } catch (err) {
+        uploadStatus.textContent = 'Upload failed.';
+        setTimeout(() => { uploadStatus.style.display = 'none'; }, 3000);
+    }
 };
 
 socket.on('search_results', (items) => {
@@ -1008,7 +1096,40 @@ function renderQueue(queue) {
     }
 }
 
+// Render LIFO Watch History Stack (Top of stack shown first)
+function renderHistory(history) {
+    const list = document.getElementById('history-list');
+    list.innerHTML = '';
+    if (!history || history.length === 0) {
+        list.textContent = 'No videos watched yet.';
+        return;
+    }
+
+    const canAdmin = ROLE_LEVEL[myRole] >= ROLE_LEVEL.admin;
+    // Traverse backwards so the top of the LIFO stack appears at the top of the UI
+    for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const row = document.createElement('div');
+        row.className = 'history-item';
+
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = item.title;
+        row.appendChild(titleSpan);
+
+        if (canAdmin) {
+            const replayBtn = document.createElement('button');
+            replayBtn.className = 'mod-btn';
+            replayBtn.textContent = '↺ Replay';
+            replayBtn.onclick = () => socket.emit('previous_video', i);
+            row.appendChild(replayBtn);
+        }
+
+        list.appendChild(row);
+    }
+}
+
 socket.on('update_queue', renderQueue);
+socket.on('update_history', renderHistory);
 
 // ==========================================
 // 7. PERSISTENT CHAT & RBAC ROSTER
@@ -1136,8 +1257,24 @@ socket.on('update_roster', (users) => {
 });
 
 // ==========================================
-// 8. WEBRTC PARTY VIDEO CALLS
+// 8. RIGHT-EDGE VERTICAL WEBRTC CALL DRAWER (Requirements 4, 5, 6)
 // ==========================================
+const callDrawer = document.getElementById('call-drawer');
+const callOpenTab = document.getElementById('call-drawer-open-tab');
+const callCloseTab = document.getElementById('call-drawer-close-tab');
+
+// Requirement 6: Clicking the left arrow at the right-edge center brings the video call onto the screen
+callOpenTab.onclick = () => {
+    callDrawer.classList.remove('collapsed');
+    callOpenTab.style.display = 'none';
+};
+
+// Requirement 5: Clicking the right arrow in the center of the stripe collapses it to the right edge
+callCloseTab.onclick = () => {
+    callDrawer.classList.add('collapsed');
+    callOpenTab.style.display = 'block';
+};
+
 const btnJoinCall = document.getElementById('btn-join-call');
 const btnToggleMic = document.getElementById('btn-toggle-mic');
 const btnToggleCam = document.getElementById('btn-toggle-cam');
@@ -1202,7 +1339,7 @@ socket.on('force_mute_status', (muted) => {
     if (audioTrack) {
         audioTrack.enabled = !muted;
         btnToggleMic.disabled = muted;
-        btnToggleMic.textContent = muted ? '🎙️❌ Muted' : '🎤 Mute Mic';
+        btnToggleMic.textContent = muted ? '🔇' : '🎤';
     }
 });
 
@@ -1239,13 +1376,13 @@ function removeVideoTile(id) {
 btnToggleMic.onclick = () => {
     if (!myVideoStream || isServerCallMuted) return;
     const t = myVideoStream.getAudioTracks()[0];
-    if (t) { t.enabled = !t.enabled; btnToggleMic.textContent = t.enabled ? '🎤 Mute Mic' : '🔇 Unmute Mic'; }
+    if (t) { t.enabled = !t.enabled; btnToggleMic.textContent = t.enabled ? '🎤' : '🔇'; }
 };
 
 btnToggleCam.onclick = () => {
     if (!myVideoStream) return;
     const t = myVideoStream.getVideoTracks()[0];
-    if (t) { t.enabled = !t.enabled; btnToggleCam.textContent = t.enabled ? '📷 Hide Cam' : '🚫 Show Cam'; }
+    if (t) { t.enabled = !t.enabled; btnToggleCam.textContent = t.enabled ? '📷' : '🚫'; }
 };
 
 btnLeaveCall.onclick = () => {
